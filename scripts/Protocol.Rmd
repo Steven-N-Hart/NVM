@@ -1,0 +1,2696 @@
+---
+title: "BRCA 1/2 Missense Analyses"
+author: "Tanya L. Hoskin, Steven N. Hart, PhD"
+date: "April 20, 2017"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE,results="asis"}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+knitr::opts_knit$set(root.dir = '/data5/bsi/epibreast/m087494.couch/Couch/Huge_Breast_VCF/BRCA1_BRCA2_VUS/SubProjects/Tanya_results_5-9-2017')
+
+cat("
+<style type=\"text/css\">
+
+.main-container {
+  max-width: 980px;
+}
+</style>
+")
+```
+
+## Necessary packages
+```{r packages}
+#library(knitr)
+library("OptimalCutpoints")
+library("randomForest")
+library("ROCR")
+library('e1071')
+library('ggplot2')
+library('gridExtra')
+```
+
+Read in the data sets and create subsets
+```{r data_and_subsets}
+
+#################################################
+# Change file path as appropriate before running#
+#################################################
+
+brca2 <- read.csv("./sources/brca2_final.tsv",header=T,sep="\t")
+brca1 <- read.csv("./sources/brca1_final.tsv",header=T,sep="\t")
+
+previous_reports <- rbind(brca2,brca1)
+table(previous_reports$CAVA_GENE,previous_reports$HDR_Classification)
+
+brca2$Reported<-NULL
+brca1$Reported<-NULL
+#Make a version of data with no missings on models for randomForest()
+vus.brca2 <- subset(brca2,!is.na(brca2$MutationassessorScore))
+vus.brca1 <- subset(brca1,(!is.na(brca1$MutationassessorScore)&!is.na(brca1$a_gvgd_prior)))
+
+#All BRCA1/2 variants without functional data
+all2 <- read.csv("./sources/brca2_other.csv")
+all2$Reported <- NULL
+all1 <- read.csv("./sources/brca1_other.csv")
+all1$Reported <- NULL
+```
+Code binary variables to report model performance at published cutpoints
+```{r published_cutpoints}
+
+stack <- rbind(brca2,brca1)
+stack$fathmmrank_pred         <- ifelse(stack$FathmmConvertedRankscore>0.8133,1,0)
+stack$fathmm_pred             <- ifelse(stack$FathmmScore<(1.5*-1),1,0)
+stack$metalrrank_pred         <- ifelse(stack$MetalrRankscore>0.8111,1,0)           
+stack$metalrscore_pred        <- ifelse(stack$MetalrScore>0.5,1,0)    
+stack$metasvmrank_pred        <- ifelse(stack$MetasvmRankscore>0.8227,1,0)            
+stack$metasvmscore_pred       <- ifelse(stack$MetasvmScore>0,1,0) 
+stack$mutationtaster_pred     <- ifelse(stack$MutationtasterScore>0.5,1,0)
+stack$mutationtasterrank_pred <- ifelse(stack$MutationtasterConvertedRankscore>0.3171,1,0)
+stack$pp2hdivrank_pred        <- ifelse(stack$Polyphen2HdivRankscore>0.3428,1,0)
+stack$pp2hdiv_pred            <- ifelse(stack$Polyphen2HdivScore>0.453,1,0)
+stack$pp2hvarrank_pred        <- ifelse(stack$Polyphen2HvarRankscore>0.442,1,0)
+stack$pp2hvar_pred            <- ifelse(stack$Polyphen2HvarScore>0.447,1,0)       
+stack$proveanrank_pred        <- ifelse(stack$ProveanConvertedRankscore>0.543,1,0)
+stack$provean_pred            <- ifelse(stack$ProveanScore<(2.5*-1),1,0)   
+stack$siftrank_pred           <- ifelse(stack$SiftConvertedRankscore>0.395,1,0)
+stack$sift_pred               <- ifelse(stack$SiftScore<0.05,1,0)
+
+brca2.pub <- subset(stack,X_CHROM=="13")
+brca1.pub <- subset(stack,X_CHROM=="17")
+
+```
+# Table S3
+### Performance characteristics of commonly used software with default thresholds
+```{r supptable3, results=FALSE}
+
+options(digits=3)
+
+sensspec <- function (pred,out){
+  t <- table(pred,out,useNA="no")
+  m2 <- margin.table(t,2)
+  tp <- t[2,2]
+  tn <- t[1,1]
+  nd <- m2[2]
+  nh <- m2[1]
+  fn <- nd - tp
+  fp <- nh - tn
+  sens <- tp/nd
+  spec <- tn/nh
+  mcc <- (tp*tn-fp*fn)/sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+  est <- cbind(tn,fn,fp,tp,sens,spec,mcc)
+}
+
+supp3names <- c("FathmmConvertedRankscore",
+                  "FathmmScore",
+                  "MetalrRankscore",
+                  "MetalrScore",
+                  "MetasvmRankscore",
+                  "MetasvmScore",
+                  "MutationtasterConvertedRankscore",
+                  "MutationtasterScore",
+                  "Polyphen2HdivRankscore",
+                  "Polyphen2HdivScore",
+                  "Polyphen2HvarRankscore",
+                  "Polyphen2HvarScore",
+                  "ProveanConvertedRankscore",
+                  "ProveanScore",
+                  "SiftConvertedRankscore",
+                  "SiftScore")
+                  
+supp3.names <- matrix(supp3names,nrow=length(supp3names),ncol=1)
+                  
+e1.1  <- sensspec(brca1.pub$fathmmrank_pred,brca1.pub$hdr_del)
+e1.2  <- sensspec(brca1.pub$fathmm_pred,brca1.pub$hdr_del)
+e1.3  <- sensspec(brca1.pub$metalrrank_pred,brca1.pub$hdr_del)
+e1.4  <- sensspec(brca1.pub$metalrscore_pred,brca1.pub$hdr_del)
+e1.5  <- sensspec(brca1.pub$metasvmrank_pred,brca1.pub$hdr_del)
+e1.6  <- sensspec(brca1.pub$metasvmscore_pred,brca1.pub$hdr_del)
+e1.7  <- sensspec(brca1.pub$mutationtasterrank_pred,brca1.pub$hdr_del)
+e1.8  <- sensspec(brca1.pub$mutationtaster_pred,brca1.pub$hdr_del)
+e1.9  <- sensspec(brca1.pub$pp2hdivrank_pred,brca1.pub$hdr_del)
+e1.10 <- sensspec(brca1.pub$pp2hdiv_pred,brca1.pub$hdr_del)
+e1.11 <- sensspec(brca1.pub$pp2hvarrank_pred,brca1.pub$hdr_del)
+e1.12 <- sensspec(brca1.pub$pp2hvar_pred,brca1.pub$hdr_del)
+e1.13 <- sensspec(brca1.pub$proveanrank_pred,brca1.pub$hdr_del)
+e1.14 <- sensspec(brca1.pub$provean_pred,brca1.pub$hdr_del)
+e1.15 <- sensspec(brca1.pub$siftrank_pred,brca1.pub$hdr_del)
+e1.16 <- sensspec(brca1.pub$sift_pred,brca1.pub$hdr_del)
+
+brca1.published <- rbind(e1.1,e1.2,e1.3,e1.4,e1.5,e1.6,e1.7,e1.8,
+                         e1.9,e1.10,e1.11,e1.12,e1.13,e1.14,e1.15,e1.16)
+                         
+brca1.published. <- data.frame(supp3.names,brca1.published)
+
+e2.1  <- sensspec(brca2.pub$fathmmrank_pred,brca2.pub$hdr_del)
+e2.2  <- sensspec(brca2.pub$fathmm_pred,brca2.pub$hdr_del)
+e2.3  <- sensspec(brca2.pub$metalrrank_pred,brca2.pub$hdr_del)
+e2.4  <- sensspec(brca2.pub$metalrscore_pred,brca2.pub$hdr_del)
+e2.5  <- sensspec(brca2.pub$metasvmrank_pred,brca2.pub$hdr_del)
+e2.6  <- sensspec(brca2.pub$metasvmscore_pred,brca2.pub$hdr_del)
+e2.7  <- sensspec(brca2.pub$mutationtasterrank_pred,brca2.pub$hdr_del)
+e2.8  <- sensspec(brca2.pub$mutationtaster_pred,brca2.pub$hdr_del)
+e2.9  <- sensspec(brca2.pub$pp2hdivrank_pred,brca2.pub$hdr_del)
+e2.10 <- sensspec(brca2.pub$pp2hdiv_pred,brca2.pub$hdr_del)
+e2.11 <- sensspec(brca2.pub$pp2hvarrank_pred,brca2.pub$hdr_del)
+e2.12 <- sensspec(brca2.pub$pp2hvar_pred,brca2.pub$hdr_del)
+e2.13 <- sensspec(brca2.pub$proveanrank_pred,brca2.pub$hdr_del)
+e2.14 <- sensspec(brca2.pub$provean_pred,brca2.pub$hdr_del)
+e2.15 <- sensspec(brca2.pub$siftrank_pred,brca2.pub$hdr_del)
+e2.16 <- sensspec(brca2.pub$sift_pred,brca2.pub$hdr_del)
+
+brca2.published <- rbind(e2.1,e2.2,e2.3,e2.4,e2.5,e2.6,e2.7,e2.8,
+                         e2.9,e2.10,e2.11,e2.12,e2.13,e2.14,e2.15,e2.16)
+                         
+brca2.published. <- data.frame(supp3.names,brca2.published)
+
+supp_table3 <- rbind(brca1.published.,brca2.published.)
+```
+For BRCA1
+```{r tableS3_BRCA1, echo=FALSE, results='asis'}
+# BRCA1
+brca1.published.$Gene = "BRCA1"
+ST3 <- brca1.published.
+```
+For BRCA2
+```{r tableS3_BRCA2}
+# BRCA2
+brca2.published.$Gene="BRCA2"
+ST3 <- rbind(ST3,brca2.published.)
+### Add default thresholds
+ST3$cutoff<-1
+ST3$cutoff[which(ST3$supp3.names=="FathmmConvertedRankscore")] <- 0.8133
+ST3$cutoff[which(ST3$supp3.names=="MetalrRankscore")] <- 0.8111
+ST3$cutoff[which(ST3$supp3.names=="MetalrScore")] <- 0.5
+ST3$cutoff[which(ST3$supp3.names=="MetasvmRankscore")] <- 0.8227
+ST3$cutoff[which(ST3$supp3.names=="MetasvmScore")] <- 0
+ST3$cutoff[which(ST3$supp3.names=="MutationtasterScore")] <- 0.5
+ST3$cutoff[which(ST3$supp3.names=="MutationtasterConvertedRankscore") ]<- 0.3171
+ST3$cutoff[which(ST3$supp3.names=="Polyphen2HdivRankscore")] <- 0.3428
+ST3$cutoff[which(ST3$supp3.names=="Polyphen2HdivScore")] <- 0.453
+ST3$cutoff[which(ST3$supp3.names=="Polyphen2HvarRankscore")] <- 0.442
+ST3$cutoff[which(ST3$supp3.names=="Polyphen2HvarScore")] <- 0.447
+ST3$cutoff[which(ST3$supp3.names=="ProveanConvertedRankscore")] <- 0.543
+ST3$cutoff[which(ST3$supp3.names=="SiftConvertedRankscore")] <- 0.395
+ST3$cutoff[which(ST3$supp3.names=="SiftScore")] <- 0.05
+ST3$cutoff[which(ST3$supp3.names=="FathmmScore")] <- (1.5*-1)
+ST3$cutoff[which(ST3$supp3.names=="ProveanScore")] <- (2.5*-1)
+
+
+
+write.table(file="tables/Table_S3.tsv",ST3,row.names = F,sep="\t")
+knitr::kable(ST3)
+```
+
+The Making of supplemental Table 4 for existing models
+BRCA2, Scenario 1
+```{r optimal_cutpoints21, warning=FALSE, message=FALSE}
+
+#For these models, higher scores are worse
+varnames1 <-
+  c("a_gvgd_prior","CaddPhred","CaddRaw","CaddRawRankscore",
+              "CAROL_score","Condel_score","DannRankscore","DannScore",
+              "FathmmConvertedRankscore","GerpNr","GerpRs",
+              "GerpRsRankscore","LrtConvertedRankscore","MetalrRankscore",
+              "MetalrScore","MetasvmRankscore","MetasvmScore","MutationassessorRankscore",
+              "MutationassessorScore","MutationtasterConvertedRankscore",
+              "MutationtasterScore","PERCH","PERCH_noMAF","Phastcons20wayMammalianRankscore",
+              "Phastcons7wayVertebrateRankscore","Phylop20wayMammalianRankscore",
+              "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HdivScore",
+              "Polyphen2HvarRankscore","Polyphen2HvarScore","ProveanConvertedRankscore",
+              "SiftConvertedRankscore","Siphy29wayLogoddsRankscore",
+              "Vest3Rankscore","Vest3Score")
+
+# For these models, lower scores are worse
+varnames2 <- c("FathmmScore","LrtScore","ProveanScore","SiftScore")
+
+# These models have two optimal cutpoints by SpEqualSe criterion for one or both genes
+# Special handling outside loop b/c structure of optimal.cutpoints output list is different
+varnames3 <- c("FathmmConvertedRankscore","FathmmScore","LrtConvertedRankscore",
+               "LrtScore","ProveanScore","DannScore","CaddRaw","CaddRawRankscore")
+
+# BRCA2 Variants
+# Outcome = Deleterious vs Intermediate/Neutral
+# Find optimal cutpoint for each model 
+
+fn <- matrix(NA,nrow=length(varnames1),ncol=1)
+fp <- matrix(NA,nrow=length(varnames1),ncol=1)
+nh <- matrix(NA,nrow=length(varnames1),ncol=1)
+nd <- matrix(NA,nrow=length(varnames1),ncol=1)
+tp <- matrix(NA,nrow=length(varnames1),ncol=1)
+tn <- matrix(NA,nrow=length(varnames1),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames1),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames1),ncol=1)
+auc <- matrix(NA,nrow=length(varnames1),ncol=3)
+sens <- matrix(NA,nrow=length(varnames1),ncol=3)
+spec <- matrix(NA,nrow=length(varnames1),ncol=3)
+
+for (i in 1:length(varnames1)) {
+
+v2a.i <- optimal.cutpoints(X=varnames1[i],status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),                         
+					                  ci.fit=TRUE,data=brca2)
+
+auc[i,] <- v2a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v2a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2a.models.dir1 <- data.frame(varnames1,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca2a.models.dir1) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+
+}
+
+fn <- matrix(NA,nrow=4,ncol=1)
+fp <- matrix(NA,nrow=4,ncol=1)
+nh <- matrix(NA,nrow=4,ncol=1)
+nd <- matrix(NA,nrow=4,ncol=1)
+tp <- matrix(NA,nrow=4,ncol=1)
+tn <- matrix(NA,nrow=4,ncol=1)
+mcc <- matrix(NA,nrow=4,ncol=1)
+cutoff <- matrix(NA,nrow=4,ncol=1)
+auc <- matrix(NA,nrow=4,ncol=3)
+sens <- matrix(NA,nrow=4,ncol=3)
+spec <- matrix(NA,nrow=4,ncol=3)
+
+for (i in 1:length(varnames2)) {
+
+v2a.i <- optimal.cutpoints(X=varnames2[i],status="hdr_del",direction=">",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2)
+
+auc[i,] <- v2a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v2a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+
+cutoff[i,1] <- v2a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                                 (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2a.models.dir2 <- data.frame(varnames2,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca2a.models.dir2) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+}
+
+brca2a.models <- rbind(brca2a.models.dir1,brca2a.models.dir2)
+brca2a.models. <- brca2a.models[order(brca2a.models$model),]
+brca2a.auc <- brca2a.models[,c("model","auc","auc.lcl","auc.ucl")]
+brca2a.auc. <- brca2a.auc[order(brca2a.auc$model),]
+
+ST4_BRCA2_S1 <-brca2a.models.
+ST4_BRCA2_S1$Gene="BRCA2"
+ST4_BRCA2_S1$Scenario=1
+```
+BRCA1 Scenario 1
+```{r optimal_cutpoints11, warning=FALSE, message=FALSE}
+
+# BRCA1 Variants
+# Outcome = Deleterious vs Intermediate/Neutral
+# Find optimal cutpoint for each model
+#These have one optimal cutpoint & higher is worse for BRCA1 Scenario1
+varnames1. <- c("a_gvgd_prior","CaddPhred","CaddRaw","CaddRawRankscore",
+                "CAROL_score","Condel_score","DannRankscore","DannScore",
+                "GerpNr","GerpRs",
+                "GerpRsRankscore","MetalrRankscore",
+                "MetalrScore","MetasvmRankscore","MetasvmScore","MutationassessorRankscore",
+                "MutationassessorScore","MutationtasterConvertedRankscore",
+                "MutationtasterScore","PERCH","PERCH_noMAF","Phastcons20wayMammalianRankscore",
+                "Phastcons7wayVertebrateRankscore","Phylop20wayMammalianRankscore",
+                "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HdivScore",
+                "Polyphen2HvarRankscore","Polyphen2HvarScore","ProveanConvertedRankscore",
+                "SiftConvertedRankscore","Siphy29wayLogoddsRankscore",
+                "Vest3Rankscore","Vest3Score")
+
+#These have one optimal cutpoint & lower is worse for BRCA1 Scenario1
+varnames2. <- c("SiftScore")
+
+#These have two optimal cutpoints, pick one, direction = higher worse
+varnames3a. <- c("FathmmConvertedRankscore","LrtConvertedRankscore")
+
+#These have two optimal cutpoints, pick one, direction = lower worse 
+varnames3b. <- c("FathmmScore","LrtScore")
+varnames3c. <- c("ProveanScore")
+
+fn <- matrix(NA,nrow=length(varnames1.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames1.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames1.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames1.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames1.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames1.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames1.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames1.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames1.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames1.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames1.),ncol=3)
+
+for (i in 1:length(varnames1.)) {
+
+v1a.i <- optimal.cutpoints(X=varnames1.[i],status="hdr_del",
+                           tag.healthy=0,methods=c("SpEqualSe"),
+					                 control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                 ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.models.dir1 <- data.frame(varnames1.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca1a.models.dir1) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+}
+
+fn <- matrix(NA,nrow=1,ncol=1)
+fp <- matrix(NA,nrow=1,ncol=1)
+nh <- matrix(NA,nrow=1,ncol=1)
+nd <- matrix(NA,nrow=1,ncol=1)
+tp <- matrix(NA,nrow=1,ncol=1)
+tn <- matrix(NA,nrow=1,ncol=1)
+mcc <- matrix(NA,nrow=1,ncol=1)
+cutoff <- matrix(NA,nrow=1,ncol=1)
+auc <- matrix(NA,nrow=1,ncol=3)
+sens <- matrix(NA,nrow=1,ncol=3)
+spec <- matrix(NA,nrow=1,ncol=3)
+
+for (i in 1:length(varnames2.)) {
+
+v1a.i <- optimal.cutpoints(X=varnames2.[i],status="hdr_del",direction=">",
+                           tag.healthy=0,methods=c("SpEqualSe"),
+					                 control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                 ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                                 (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.models.dir2 <- data.frame(varnames2.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca1a.models.dir2) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+
+}
+
+
+####
+
+fn <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames3a.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames3a.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames3a.),ncol=3)
+
+for (i in 1:length(varnames3a.)) {
+
+v1a.i <- optimal.cutpoints(X=varnames3a.[i],status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					control = control.cutpoints(ci.SeSp = "AgrestiCoull"),                                           
+					   ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1,3,5)]
+spec[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1,3,5)]
+fn[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff[1]
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.models.dir1. <- data.frame(varnames3a.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca1a.models.dir1.) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+}
+
+
+fn <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames3b.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames3b.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames3b.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames3b.),ncol=3)
+
+for (i in 1:length(varnames3b.)) {
+
+v1a.i <- optimal.cutpoints(X=varnames3b.[i],status="hdr_del",direction=">",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(2,4,6)]
+spec[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(2,4,6)]
+fn[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FN[2]
+fp[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FP[2]
+nh[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff[2]
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                                 (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.models.dir2. <- data.frame(varnames3b.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca1a.models.dir2.) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                   "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                   "TP","TN","mcc")
+
+}
+
+
+fn <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames3c.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames3c.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames3c.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames3c.),ncol=3)
+
+for (i in 1:length(varnames3c.)) {
+
+v1a.i <- optimal.cutpoints(X=varnames3c.[i],status="hdr_del",direction=">",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1a.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1,3,5)]
+spec[i,] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1,3,5)]
+fn[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1a.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1a.i$SpEqualSe[[1]]$optimal.cutoff$cutoff[1]
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                          (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.models.dir2.. <- data.frame(varnames3c.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                   stringsAsFactors = FALSE)
+colnames(brca1a.models.dir2..) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                    "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                    "TP","TN","mcc")
+
+}
+
+brca1a.models <- rbind(brca1a.models.dir1,brca1a.models.dir2,brca1a.models.dir1.,
+                        brca1a.models.dir2.,brca1a.models.dir2..)
+brca1a.models. <- brca1a.models[order(brca1a.models$model),]
+brca1a.auc <- brca1a.models[,c("model","auc","auc.lcl","auc.ucl")]
+brca1a.auc. <- brca1a.auc[order(brca1a.auc$model),]
+
+ST4_BRCA1_S1 <- brca1a.models.
+ST4_BRCA1_S1$Gene="BRCA1"
+ST4_BRCA1_S1$Scenario=1
+```
+BRCA1, Scenario 2
+```{r optimal_cutpoints12, warning=FALSE, message=FALSE}
+# Scenario 2
+# Outcome = Deleterious/Intermediate vs Neutral
+# Find optimal cutpoint for each model
+varnames1. <- c("a_gvgd_prior","CaddPhred","CaddRaw","CaddRawRankscore",
+                "CAROL_score","Condel_score","DannRankscore","DannScore",
+                "GerpNr","GerpRs",
+                "GerpRsRankscore","MetalrRankscore",
+                "MetalrScore","MetasvmRankscore","MetasvmScore","MutationassessorRankscore",
+                "MutationassessorScore","MutationtasterConvertedRankscore",
+                "MutationtasterScore","PERCH","PERCH_noMAF","Phastcons20wayMammalianRankscore",
+                "Phastcons7wayVertebrateRankscore","Phylop20wayMammalianRankscore",
+                "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HdivScore",
+                "Polyphen2HvarRankscore","Polyphen2HvarScore","ProveanConvertedRankscore",
+                "SiftConvertedRankscore","Siphy29wayLogoddsRankscore",
+                "Vest3Rankscore","Vest3Score","FathmmConvertedRankscore","LrtConvertedRankscore")
+
+#These have one optimal cutpoint & lower is worse for BRCA1 Scenario1
+varnames2. <- c("SiftScore","FathmmScore","LrtScore","ProveanScore")
+
+fn <- matrix(NA,nrow=length(varnames1.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames1.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames1.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames1.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames1.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames1.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames1.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames1.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames1.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames1.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames1.),ncol=3)
+
+for (i in 1:length(varnames1.)) {
+
+v1b.i <- optimal.cutpoints(X=varnames1.[i],status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"), 
+					                  ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1b.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1b.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1b.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1b.models.dir1 <- data.frame(varnames1.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca1b.models.dir1) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+
+}
+
+fn <- matrix(NA,nrow=length(varnames2.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames2.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames2.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames2.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames2.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames2.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames2.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames2.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames2.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames2.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames2.),ncol=3)
+
+for (i in 1:length(varnames2.)) {
+
+v1b.i <- optimal.cutpoints(X=varnames2.[i],status="hdr_not_neutral",direction=">",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca1)
+
+auc[i,] <- v1b.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1b.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1b.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1b.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                               (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1b.models.dir2 <- data.frame(varnames2.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca1b.models.dir2) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+
+}
+
+brca1b.models <- rbind(brca1b.models.dir1,brca1b.models.dir2)
+brca1b.models. <- brca1b.models[order(brca1b.models$model),]
+brca1b.auc <- brca1b.models[,c("model","auc","auc.lcl","auc.ucl")]
+brca1b.auc. <- brca1b.auc[order(brca1b.auc$model),]
+
+
+ST4_BRCA1_S2 <- brca1b.models.
+ST4_BRCA1_S2$Gene="BRCA1"
+ST4_BRCA1_S2$Scenario=2
+
+```
+BRCA2 Scenario 2
+```{r optimal_cutpoints22, warning=FALSE, message=FALSE}
+
+# BRCA2 Variants
+# Outcome = Deleterious/Intermediate vs Neutral
+# Find optimal cutpoint for each model
+#These have one optimal cutpoint & higher is worse for BRCA2 Scenario2
+varnames1. <- c("a_gvgd_prior","CaddPhred",
+              "CAROL_score","Condel_score","DannRankscore",
+              "GerpNr","GerpRs","FathmmConvertedRankscore","LrtConvertedRankscore",
+              "GerpRsRankscore","MetalrRankscore",
+              "MetalrScore","MetasvmRankscore","MetasvmScore","MutationassessorRankscore",
+              "MutationassessorScore","MutationtasterConvertedRankscore",
+              "MutationtasterScore","PERCH","PERCH_noMAF","Phastcons20wayMammalianRankscore",
+              "Phastcons7wayVertebrateRankscore","Phylop20wayMammalianRankscore",
+              "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HdivScore",
+              "Polyphen2HvarRankscore","Polyphen2HvarScore","ProveanConvertedRankscore",
+              "SiftConvertedRankscore","Siphy29wayLogoddsRankscore",
+              "Vest3Rankscore","Vest3Score")
+
+#These have one optimal cutpoint & lower is worse for BRCA2 Scenario2
+varnames2. <- c("FathmmScore","LrtScore","ProveanScore","SiftScore")
+
+#These have two optimal cutpoints, pick one, direction = higher worse
+varnames3a. <- c("CaddRaw","CaddRawRankscore","DannScore")
+
+fn <- matrix(NA,nrow=length(varnames1.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames1.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames1.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames1.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames1.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames1.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames1.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames1.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames1.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames1.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames1.),ncol=3)
+
+for (i in 1:length(varnames1.)) {
+
+v2b.i <- optimal.cutpoints(X=varnames1.[i],status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2)
+
+auc[i,] <- v2b.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v2b.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2b.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2b.models.dir1 <- data.frame(varnames1.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                 stringsAsFactors = FALSE)
+colnames(brca2b.models.dir1) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+
+}
+
+fn <- matrix(NA,nrow=length(varnames2.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames2.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames2.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames2.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames2.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames2.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames2.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames2.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames2.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames2.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames2.),ncol=3)
+
+for (i in 1:length(varnames2.)) {
+
+v2b.i <- optimal.cutpoints(X=varnames2.[i],status="hdr_not_neutral",direction=">",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2)
+
+auc[i,] <- v2b.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v2b.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2b.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                    (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2b.models.dir2 <- data.frame(varnames2.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,stringsAsFactors = FALSE)
+colnames(brca2b.models.dir2) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                                  "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                                  "TP","TN","mcc")
+
+}
+
+
+####
+
+fn <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+fp <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+nh <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+nd <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+tp <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+tn <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+mcc <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+cutoff <- matrix(NA,nrow=length(varnames3a.),ncol=1)
+auc <- matrix(NA,nrow=length(varnames3a.),ncol=3)
+sens <- matrix(NA,nrow=length(varnames3a.),ncol=3)
+spec <- matrix(NA,nrow=length(varnames3a.),ncol=3)
+
+for (i in 1:length(varnames3a.)) {
+
+v2b.i <- optimal.cutpoints(X=varnames3a.[i],status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2)
+
+auc[i,] <- v2b.i$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$Se[c(2,4,6)]
+spec[i,] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$Sp[c(2,4,6)]
+fn[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$FN[2]
+fp[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$FP[2]
+nh[i,1] <- v2b.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2b.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v2b.i$SpEqualSe[[1]]$optimal.cutoff$cutoff[2]
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2b.models.dir1. <- data.frame(varnames3a.,cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                  stringsAsFactors = FALSE)
+colnames(brca2b.models.dir1.) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+}
+
+brca2b.models <- rbind(brca2b.models.dir1,brca2b.models.dir2,brca2b.models.dir1.)
+brca2b.models. <- brca2b.models[order(brca2b.models$model),]
+brca2b.auc <- brca2b.models[,c("model","auc","auc.lcl","auc.ucl")]
+brca2b.auc. <- brca2b.auc[order(brca2b.auc$model),]
+
+ST4_BRCA2_S2 <- brca2b.models.
+ST4_BRCA2_S2$Gene="BRCA2"
+ST4_BRCA2_S2$Scenario=2
+```
+Input list of individual predictive model names for use in plots
+```{r model_names}
+
+modelnames<-c(
+"AlignGVGDPrior",
+"CADDPhred",
+"CADDRaw",
+"CADDRawRankScore",
+"CAROL",
+"CONDEL",
+"DannRankScore",
+"DannScore",
+"FathmmRankScore",
+"FathmmScore",
+"GerpNr",
+"GerpRs",
+"GerpRsRankScore",
+"LRTConvertedRankScore",
+"LRTScore",
+"MetaLRRankScore",
+"MetaLRScore",
+"MetaSVMRankScore",
+"MetaSVMScore",
+"MutationAssessorRankScore",
+"MutationAssessorScore",
+"MutationTasterRankScore",
+"MutationTasterScore",
+"PERCH",
+"PERCHnoMAF",
+"Phastcons20wayMammalianRank",
+"Phastcons7wayVertebrateRank",
+"Phylop20wayMammalianRank",
+"Phylop7wayVertebrateRank",
+"Polyphen2HdivRankScore",
+"Polyphen2HdivScore",
+"Polyphen2HvarRankScore",
+"Polyphen2HvarScore",
+"PROVEANConvertedRankScore",
+"PROVEANScore",
+"SiftConvertedRankScore",
+"SiftScore",
+"Siphy29wayLogOddsRank",
+"Vest3RankScore",
+"Vest3Score")
+```
+# Figure 2
+### Area under the curve (AUC) for optimized thresholds in 40 damaging missense predictors. 
+Each dot represents the AUC, and bars are the 95% confidence intervals for each prediction.
+```{r plot2, fig.width = 10, fig.height = 10}
+
+################################################
+#  Make forest plot	of auc estimates	         #
+################################################
+b2 <- ggplot(brca2a.auc.,aes(x=model,y=auc,ymin=auc.lcl,ymax=auc.ucl))+
+  geom_pointrange()+
+  ylim(0,1)+
+  coord_flip()+
+  theme_bw()+
+  ylab("AUC (95%CI)")+
+  xlab(NULL)+
+  ggtitle("BRCA2") +
+  scale_colour_grey()
+
+b1 <- ggplot(brca1a.auc.,aes(x=model,y=auc,ymin=auc.lcl,ymax=auc.ucl))+
+  geom_pointrange()+
+  ylim(0,1)+
+  coord_flip()+
+  theme_bw()+
+  ylab("AUC (95%CI)")+
+  ggtitle("BRCA1")+
+  theme(axis.text.y = element_blank())+
+  xlab(NULL) + scale_colour_grey()
+
+
+tmp1  <- brca1a.auc.
+tmp1$Gene = "BRCA1"
+tmp2  <- brca2a.auc.
+tmp2$Gene = "BRCA2"
+tmp<-rbind(tmp1,tmp2)
+
+ggplot(tmp,aes(x=model,y=auc,ymin=auc.lcl,ymax=auc.ucl))+
+  geom_pointrange()+
+  ylim(0,1)+
+  facet_grid(. ~ Gene)+
+  coord_flip()+
+  theme_bw()+
+  ylab("AUC (95%CI)")+
+  xlab(NULL)+ scale_colour_grey()
+
+ggsave("figures/FIGURE_2.png",width=9,height=7, units="in",dpi = 600)
+
+```
+# Figure S1
+### Area under the curve (AUC) for optimized thresholds in 40 damaging missense predictors. 
+Each dot represents the AUC, and bars are the 95% confidence intervals for Scenario 2.
+```{r fig_s1, fig.width = 10, fig.height = 10}
+
+################################################
+#  Make forest plot	of auc estimates	         #
+################################################
+b2 <- ggplot(brca2b.auc.,aes(x=model,y=auc,ymin=auc.lcl,ymax=auc.ucl))+
+  geom_pointrange()+
+  ylim(0,1)+
+  coord_flip()+
+  theme_bw()+
+  ylim(0,1)+ylab("AUC (95%CI)")+
+  xlab(NULL)+
+  ggtitle("BRCA2")
+
+b1 <- ggplot(brca1b.auc.,aes(x=model,y=auc,ymin=auc.lcl,ymax=auc.ucl))+
+  geom_pointrange()+
+  ylim(0,1)+
+  coord_flip()+
+  theme_bw()+
+  ylab("AUC (95%CI)")+
+  ggtitle("BRCA1")+
+  theme(axis.text.y = element_blank())+
+  xlab(NULL)
+
+tmp1  <- brca1b.auc.
+tmp1$Gene = "BRCA1"
+tmp2  <- brca2b.auc.
+tmp2$Gene = "BRCA2"
+tmp<-rbind(tmp1,tmp2)
+
+ggplot(tmp,aes(x=model,y=auc,ymin=auc.lcl,ymax=auc.ucl))+
+  geom_pointrange()+
+  ylim(0,1)+
+  facet_grid(. ~ Gene)+
+  coord_flip()+
+  theme_bw()+
+  ylab("AUC (95%CI)")+
+  xlab(NULL)
+
+ggsave("figures/FIG_S1.png",width=9,height=7, units="in",dpi = 600)
+
+```
+
+
+# Code for fitting Random Forests
+```{r random_forest}
+
+#############################
+# Deleterious vs Int/Neutral#
+#############################
+
+##############################
+#	BRCA2			                 #
+##############################
+
+class.del <- factor(vus.brca2$hdr_del)
+MODELS<-vus.brca2[,c("CaddRawRankscore","DannRankscore","FathmmConvertedRankscore","GerpNr",
+             "GerpRsRankscore","LrtConvertedRankscore","MetalrRankscore","MetasvmRankscore",
+              "MutationassessorRankscore","MutationtasterConvertedRankscore",
+               "Phastcons20wayMammalianRankscore","Phastcons7wayVertebrateRankscore",
+                "Phylop20wayMammalianRankscore",
+                  "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HvarRankscore",
+                    "ProveanConvertedRankscore",
+                    "SiftConvertedRankscore","Siphy29wayLogoddsRankscore","Vest3Rankscore",
+                     "a_gvgd_prior","PERCH")]
+
+#set.seed(559)
+#tune2a <- tune.randomForest(y=class.del,x=MODELS,mtry=c(2,3,4,5,6,7,8,9,10),ntree=c(500))
+
+#tune2b <- tuneRF(x=MODELS,y=class.del,ntreeTry=500,stepFactor=1.5,plot=T)
+
+set.seed(559)
+
+rf.brca2.del <- randomForest(factor(hdr_del)~
+                               CaddRawRankscore+DannRankscore+FathmmConvertedRankscore+
+		                           GerpNr+GerpRsRankscore+LrtConvertedRankscore+MetalrRankscore+
+		                           MetasvmRankscore+
+                               MutationassessorRankscore+MutationtasterConvertedRankscore+
+                               Phastcons20wayMammalianRankscore+Phastcons7wayVertebrateRankscore+
+                               Phylop20wayMammalianRankscore+
+                               Phylop7wayVertebrateRankscore+Polyphen2HdivRankscore+
+                               Polyphen2HvarRankscore+
+                               ProveanConvertedRankscore+
+                               SiftConvertedRankscore+Siphy29wayLogoddsRankscore+Vest3Rankscore+
+                               a_gvgd_prior+PERCH,
+                               importance=T,proximity=T,ntree=500,mtry=4,
+                               keep.forest=T,data=vus.brca2)
+
+imp2del <- as.data.frame(importance(rf.brca2.del,type=1))
+imp2del. <- imp2del[order(imp2del$MeanDecreaseAccuracy),,drop=FALSE]
+
+rf.brca2.pred.del <- predict(rf.brca2.del,type='prob')
+vus.brca2. <- cbind(vus.brca2,round(rf.brca2.pred.del[,2],digits=3))
+colnames(vus.brca2.)[76] <- "rf_prob_del"
+
+#Add RF prediction for BRCA2 variants without functional data
+brca2.del.new <- predict(rf.brca2.del,type='prob',newdata=all2)
+
+all2. <- cbind(all2,round(brca2.del.new[,2],digits=3))
+colnames(all2.)[74] <- "rf_prob_del"
+
+##############################
+#	BRCA1			                 #
+##############################
+
+class.del <- factor(vus.brca1$hdr_del)
+MODELS<-vus.brca1[,c("CAROL_score","Condel_score","CaddRawRankscore","DannRankscore",
+                     "FathmmConvertedRankscore","GerpNr",
+                     "GerpRsRankscore","LrtConvertedRankscore","MetalrRankscore",
+                     "MetasvmRankscore",
+                     "MutationassessorRankscore","MutationtasterConvertedRankscore",
+                     "Phastcons20wayMammalianRankscore","Phastcons7wayVertebrateRankscore",
+                     "Phylop20wayMammalianRankscore",
+                     "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HvarRankscore",
+                     "ProveanConvertedRankscore",
+                     "SiftConvertedRankscore","Siphy29wayLogoddsRankscore","Vest3Rankscore",
+                     "a_gvgd_prior","PERCH")]
+
+#set.seed(559)
+#tune1a <- tune.randomForest(y=class.del,x=MODELS,mtry=c(2,3,4,5,6,7,8,9,10),
+#                                ntree=c(250,500,1000))
+
+#tune1b <- tuneRF(x=MODELS,y=class.del,ntreeTry=500,stepFactor=1.5,plot=T)
+
+set.seed(559)
+rf.brca1.del <- randomForest(factor(hdr_del)~CaddRawRankscore+DannRankscore+FathmmConvertedRankscore+
+		                  GerpNr+GerpRsRankscore+LrtConvertedRankscore+MetalrRankscore+MetasvmRankscore+
+                      MutationassessorRankscore+MutationtasterConvertedRankscore+
+                      Phastcons20wayMammalianRankscore+Phastcons7wayVertebrateRankscore+
+                      Phylop20wayMammalianRankscore+
+                      Phylop7wayVertebrateRankscore+Polyphen2HdivRankscore+
+		                  Polyphen2HvarRankscore+ProveanConvertedRankscore+
+                      SiftConvertedRankscore+Siphy29wayLogoddsRankscore+
+                      Vest3Rankscore+a_gvgd_prior+PERCH+
+                      CAROL_score+Condel_score,
+                      importance=T,proximity=T,ntree=500,data=vus.brca1,
+                      keep.forest=T,mtry=4)
+
+imp1del <- as.data.frame(importance(rf.brca1.del,type=1))
+imp1del. <- imp1del[order(imp1del$MeanDecreaseAccuracy),,drop=FALSE]
+
+rf.brca1.pred.del <- predict(rf.brca1.del,type='prob')
+vus.brca1. <- cbind(vus.brca1,round(rf.brca1.pred.del[,2],digits=3))
+colnames(vus.brca1.)[76] <- "rf_prob_del"
+
+#Add RF prediction for BRCA1 variants without functional data
+brca1.del.new <- predict(rf.brca1.del,type='prob',newdata=all1)
+
+all1. <- cbind(all1,round(brca1.del.new[,2],digits=3))
+colnames(all1.)[74] <- "rf_prob_del"
+
+####################################
+# Del/Int vs Neutral		           #
+####################################
+
+##############################
+#	BRCA2			                 #
+##############################
+
+class.delint <- factor(vus.brca2$hdr_not_neutral)
+MODELS<-vus.brca2[,c("CaddRawRankscore","DannRankscore","FathmmConvertedRankscore","GerpNr",
+             "GerpRsRankscore","LrtConvertedRankscore","MetalrRankscore","MetasvmRankscore",
+              "MutationassessorRankscore","MutationtasterConvertedRankscore",
+               "Phastcons20wayMammalianRankscore","Phastcons7wayVertebrateRankscore",
+                 "Phylop20wayMammalianRankscore",
+                  "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HvarRankscore",
+                    "ProveanConvertedRankscore",
+                      "SiftConvertedRankscore","Siphy29wayLogoddsRankscore","Vest3Rankscore",
+                       "a_gvgd_prior","PERCH")]
+
+#set.seed(420)
+#tune2b <- tuneRF(x=MODELS,y=class.delint,ntreeTry=500,stepFactor=1.5,plot=T)
+
+set.seed(420)
+#rf.brca2.delint <- randomForest(y=class.delint,x=MODELS,importance=T,proximity=T,ntree=500,
+#                 keep.forest=T,mtry=4)
+
+
+rf.brca2.delint <- randomForest(factor(hdr_not_neutral)~CaddRawRankscore+DannRankscore+
+                                  FathmmConvertedRankscore+
+		                              GerpNr+GerpRsRankscore+LrtConvertedRankscore+MetalrRankscore+
+		                              MetasvmRankscore+
+                                  MutationassessorRankscore+MutationtasterConvertedRankscore+
+                                  Phastcons20wayMammalianRankscore+Phastcons7wayVertebrateRankscore+
+                                  Phylop20wayMammalianRankscore+
+                                  Phylop7wayVertebrateRankscore+Polyphen2HdivRankscore+
+                                  Polyphen2HvarRankscore+
+                                  ProveanConvertedRankscore+
+                                  SiftConvertedRankscore+Siphy29wayLogoddsRankscore+Vest3Rankscore+
+                                  a_gvgd_prior+PERCH,
+                                  importance=T,proximity=T,ntree=500,
+                                  keep.forest=T,mtry=4,data=vus.brca2)
+
+imp2delint <- as.data.frame(importance(rf.brca2.delint,type=1))
+imp2delint. <- imp2delint[order(imp2delint$MeanDecreaseAccuracy),,drop=FALSE]
+
+rf.brca2.pred.delint <- predict(rf.brca2.delint,type='prob')
+
+vus.brca2.. <- cbind(vus.brca2.,round(rf.brca2.pred.delint[,2],digits=3))
+colnames(vus.brca2..)[77] <- "rf_prob_delint"
+
+#Add RF prediction for BRCA2 variants without functional data
+brca2.delint.new <- predict(rf.brca2.delint,type='prob',newdata=all2)
+
+all2.. <- cbind(all2.,round(brca2.delint.new[,2],digits=3))
+colnames(all2..)[75] <- "rf_prob_delint"
+
+
+##############################
+#	BRCA1			                 #
+##############################
+
+
+class.delint <- factor(vus.brca1$hdr_not_neutral)
+MODELS<-vus.brca1[,c("CAROL_score","Condel_score","CaddRawRankscore","DannRankscore",
+                     "FathmmConvertedRankscore","GerpNr",
+                     "GerpRsRankscore","LrtConvertedRankscore","MetalrRankscore",
+                     "MetasvmRankscore",
+                     "MutationassessorRankscore","MutationtasterConvertedRankscore",
+                     "Phastcons20wayMammalianRankscore","Phastcons7wayVertebrateRankscore",
+                     "Phylop20wayMammalianRankscore",
+                     "Phylop7wayVertebrateRankscore","Polyphen2HdivRankscore","Polyphen2HvarRankscore",
+                     "ProveanConvertedRankscore",
+                     "SiftConvertedRankscore","Siphy29wayLogoddsRankscore","Vest3Rankscore",
+                     "a_gvgd_prior","PERCH")]
+
+#set.seed(420)
+#tune1b <- tuneRF(x=MODELS,y=class.delint,ntreeTry=500,stepFactor=1.5,plot=T)
+
+set.seed(420)
+
+rf.brca1.delint <- randomForest(factor(hdr_not_neutral)~
+                                  CaddRawRankscore+DannRankscore+
+                                  FathmmConvertedRankscore+
+		                              GerpNr+GerpRsRankscore+LrtConvertedRankscore+
+		                              MetalrRankscore+MetasvmRankscore+
+                                  MutationassessorRankscore+MutationtasterConvertedRankscore+
+                                  Phastcons20wayMammalianRankscore+Phastcons7wayVertebrateRankscore+
+                                  Phylop20wayMammalianRankscore+
+                                  Phylop7wayVertebrateRankscore+Polyphen2HdivRankscore+
+                                  Polyphen2HvarRankscore+
+                                  ProveanConvertedRankscore+
+                                  SiftConvertedRankscore+Siphy29wayLogoddsRankscore+Vest3Rankscore+
+                                  a_gvgd_prior+PERCH+
+                                  CAROL_score+
+                                  Condel_score,
+                                  importance=T,proximity=T,ntree=500,
+                                  keep.forest=T,mtry=4,data=vus.brca1)
+
+imp1delint <- as.data.frame(importance(rf.brca1.delint,type=1))
+imp1delint. <- imp1delint[order(imp1delint$MeanDecreaseAccuracy),,drop=FALSE]
+
+rf.brca1.pred.delint <- predict(rf.brca1.delint,type='prob')
+
+vus.brca1.. <- cbind(vus.brca1.,round(rf.brca1.pred.delint[,2],digits=3))
+colnames(vus.brca1..)[77] <- "rf_prob_delint"
+
+# Add RF prediction for BRCA1 variants without functional data
+brca1.delint.new <- predict(rf.brca1.delint,type='prob',newdata=all1)
+
+all1.. <- cbind(all1.,round(brca1.delint.new[,2],digits=3))
+colnames(all1..)[75] <- "rf_prob_delint"
+
+```
+Random Forest Variable Importance  Plot (Scenario 1) - Not used
+```{r plot4,, width = 8, height = 4, pointsize = 10}
+
+dotchart(imp2del.[,1],labels=rownames(imp2del.),xlim=c(0,23),xlab='Mean Decrease Accuracy',main='BRCA2')
+dotchart(imp1del.[,1],labels=rownames(imp1del.),xlim=c(0,23),xlab='Mean Decrease Accuracy',main='BRCA1')
+
+par(xpd=T)
+
+```
+
+Random Forest Variable Importance  Plot (Scenario 2)
+
+```{r plot5, width = 8, height = 4, pointsize = 10}
+
+
+dotchart(imp2delint.[,1],labels=rownames(imp2delint.),xlim=c(0,23),xlab='Mean Decrease Accuracy',main='BRCA2')
+dotchart(imp1delint.[,1],labels=rownames(imp1delint.),xlim=c(0,23),xlab='Mean Decrease Accuracy',main='BRCA1')
+
+par(xpd=T)
+
+```
+
+# Code for fitting NVM
+```{r nvm_variables, warning=FALSE, message=FALSE}
+
+brca2$perch_del <- ifelse(brca2$PERCH>=0.295957,1,0) 
+brca2$metasvmrank_del <- ifelse(brca2$MetasvmRankscore>=0.93181,1,0)
+brca2$metalrrank_del <- ifelse(brca2$MetalrRankscore>=0.92107,1,0)
+brca2$mutationassessor_del <- ifelse(brca2$MutationassessorRankscore>=0.84368,1,0)
+brca2$vest3rank_del <- ifelse(brca2$Vest3Rankscore>=0.79963,1,0)
+brca2$pp2hvarrank_del <- ifelse(brca2$Polyphen2HvarRankscore>=0.97092,1,0)
+brca2$fathmm_del <- ifelse(brca2$FathmmConvertedRankscore>=0.8581,1,0)
+brca2$mutationtaster_del <- ifelse(brca2$MutationtasterConvertedRankscore>=0.58814,1,0)
+brca2$sift_del <- ifelse(brca2$SiftConvertedRankscore>=0.9122,1,0)
+brca2$agvgd_del <- ifelse(brca2$a_gvgd_prior>=0.81,1,0)
+brca2$lrt_del <- ifelse(brca2$LrtScore<=0,1,0)
+brca2$provean_del <- ifelse(brca2$ProveanConvertedRankscore>=0.42352,1,0)
+brca2$pp2hdiv_del <- ifelse(brca2$Polyphen2HdivRankscore>=0.89865,1,0)
+brca2$gerprs_del <- ifelse(brca2$GerpRsRankscore>=0.7396,1,0)
+brca2$cadd_del <- ifelse(brca2$CaddPhred>=29.4,1,0)     
+brca2$siphy_del <- ifelse(brca2$Siphy29wayLogoddsRankscore>=0.78299,1,0)
+brca2$phylopmammal_del <- ifelse(brca2$Phylop20wayMammalianRankscore>=0.63346,1,0)   
+brca2$phylopvertebrate_del <- ifelse(brca2$Phylop7wayVertebrateRankscore>=0.76621,1,0)
+brca2$phastconsvertebrate_del <- ifelse(brca2$Phastcons7wayVertebrateRankscore>=0.61045,1,0)
+brca2$phastconsmammal_del <- ifelse(brca2$Phastcons20wayMammalianRankscore>=0.60234,1,0)
+brca2$dann_del <- ifelse(brca2$DannRankscore>=0.84566,1,0)
+brca2$gerpnr_del <- ifelse(brca2$GerpNr>=5.49,1,0)
+
+brca2$sum_del_1 = with(brca2, perch_del)
+brca2$sum_del_2 = with(brca2, perch_del+metasvmrank_del)
+brca2$sum_del_3 = with(brca2, perch_del+metasvmrank_del+metalrrank_del)
+brca2$sum_del_4 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del)
+brca2$sum_del_5 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+
+                          pp2hvarrank_del)
+brca2$sum_del_6 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del)
+brca2$sum_del_7 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del)
+brca2$sum_del_8 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del)
+brca2$sum_del_9 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del)
+brca2$sum_del_10 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del)
+brca2$sum_del_11 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del)
+brca2$sum_del_12 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del)
+brca2$sum_del_13 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del)
+brca2$sum_del_14 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del)
+brca2$sum_del_15 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del)
+brca2$sum_del_16 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del)
+brca2$sum_del_17 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del+phastconsvertebrate_del)
+brca2$sum_del_18 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del+phastconsvertebrate_del+
+                      phylopmammal_del)
+brca2$sum_del_19 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del+phastconsvertebrate_del+
+                      phylopmammal_del+phylopvertebrate_del)
+brca2$sum_del_20 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del+phastconsvertebrate_del+
+                      phylopmammal_del+phylopvertebrate_del+gerpnr_del)
+brca2$sum_del_21 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del+phastconsvertebrate_del+
+                      phylopmammal_del+phylopvertebrate_del+gerpnr_del+phastconsmammal_del)
+brca2$sum_del_22 = with(brca2, perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del+pp2hdiv_del+fathmm_del+sift_del+mutationtaster_del+
+                     lrt_del+agvgd_del+provean_del+cadd_del+gerprs_del+siphy_del+phastconsvertebrate_del+
+                      phylopmammal_del+phylopvertebrate_del+gerpnr_del+phastconsmammal_del+
+                        dann_del)
+                        
+brca2$perch_nn <- ifelse(brca2$PERCH>=0.232796,1,0)
+brca2$metasvmrank_nn <- ifelse(brca2$MetasvmRankscore>=0.92233,1,0)
+brca2$metalrrank_nn <- ifelse(brca2$MetalrRankscore>=0.91514,1,0)  
+brca2$mutationassessor_nn <- ifelse(brca2$MutationassessorRankscore>=0.83541,1,0)
+brca2$vest3rank_nn <- ifelse(brca2$Vest3Rankscore>=0.7831,1,0)
+brca2$fathmm_nn <- ifelse(brca2$FathmmConvertedRankscore>=0.84569,1,0)
+brca2$pp2hvarrank_nn <- ifelse(brca2$Polyphen2HvarRankscore>=0.97092,1,0)
+brca2$mutationtaster_nn <- ifelse(brca2$MutationtasterConvertedRankscore>=0.58814,1,0)
+brca2$sift_nn <- ifelse(brca2$SiftConvertedRankscore>=0.91219,1,0)         
+brca2$agvgd_nn <- ifelse(brca2$a_gvgd_prior>=0.81,1,0)
+brca2$lrt_nn <- ifelse(brca2$LrtScore<=0,1,0)
+brca2$provean_nn <- ifelse(brca2$ProveanConvertedRankscore>=0.4197,1,0)
+brca2$pp2hdiv_nn <- ifelse(brca2$Polyphen2HdivRankscore>=0.89865,1,0)
+brca2$gerprs_nn <- ifelse(brca2$GerpRsRankscore>=0.71253,1,0)
+brca2$cadd_nn <- ifelse(brca2$CaddRawRankscore>=0.86323,1,0)    
+brca2$siphy_nn <- ifelse(brca2$Siphy29wayLogoddsRankscore>=0.75958,1,0)
+brca2$phylopmammal_nn <- ifelse(brca2$Phylop20wayMammalianRankscore>=0.61215,1,0)
+brca2$phylopvertebrate_nn <- ifelse(brca2$Phylop7wayVertebrateRankscore>=0.76621,1,0)
+brca2$phastconsvertebrate_nn <- ifelse(brca2$Phastcons7wayVertebrateRankscore>=0.59096,1,0)
+brca2$phastconsmammal_nn <- ifelse(brca2$Phastcons20wayMammalianRankscore>=0.60234,1,0)
+brca2$dann_nn <- ifelse(brca2$DannRankscore>=0.8433,1,0)
+brca2$gerpnr_nn <- ifelse(brca2$GerpNr>=5.49,1,0)
+                  
+brca2$sum_nn_1 = with(brca2, perch_nn)
+brca2$sum_nn_2 = with(brca2, perch_nn+vest3rank_nn)
+brca2$sum_nn_3 = with(brca2, perch_nn+vest3rank_nn+metalrrank_nn)
+brca2$sum_nn_4 = with(brca2, perch_nn+vest3rank_nn+metalrrank_nn+pp2hvarrank_nn)
+brca2$sum_nn_5 = with(brca2, perch_nn+vest3rank_nn+metalrrank_nn+pp2hvarrank_nn+metasvmrank_nn)
+brca2$sum_nn_6 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn) 
+brca2$sum_nn_7 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn)
+brca2$sum_nn_8 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn)
+brca2$sum_nn_9 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn)
+brca2$sum_nn_10 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn)
+brca2$sum_nn_11 = with(brca2,perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn)
+brca2$sum_nn_12 = with(brca2,perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn)
+brca2$sum_nn_13 = with(brca2,perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn)
+brca2$sum_nn_14 = with(brca2,perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn)
+brca2$sum_nn_15 = with(brca2,perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn)
+brca2$sum_nn_16 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn)
+brca2$sum_nn_17 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn+gerprs_nn)
+brca2$sum_nn_18 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn+gerprs_nn+phylopmammal_nn)
+brca2$sum_nn_19 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn+gerprs_nn+phylopmammal_nn+phylopvertebrate_nn)
+brca2$sum_nn_20 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn+gerprs_nn+phylopmammal_nn+phylopvertebrate_nn+gerpnr_nn)
+brca2$sum_nn_21 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn+gerprs_nn+phylopmammal_nn+phylopvertebrate_nn+gerpnr_nn+
+                 dann_nn)
+brca2$sum_nn_22 = with(brca2, perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                 pp2hdiv_nn+sift_nn+mutationassessor_nn+mutationtaster_nn+lrt_nn+
+                 agvgd_nn+fathmm_nn+provean_nn+phastconsvertebrate_nn+cadd_nn+
+                 siphy_nn+gerprs_nn+phylopmammal_nn+phylopvertebrate_nn+gerpnr_nn+
+                 dann_nn+ phastconsmammal_nn)
+
+#BRCA1
+
+
+brca1$perch_del <- ifelse(brca1$PERCH_noMAF>=0.206316,1,0)
+brca1$metasvmrank_del <- ifelse(brca1$MetasvmRankscore>=0.9083,1,0)
+brca1$metalrrank_del <- ifelse(brca1$MetalrRankscore>=0.90291,1,0)
+brca1$mutationassessor_del <- ifelse(brca1$MutationassessorRankscore>=0.54432,1,0)
+brca1$vest3rank_del <- ifelse(brca1$Vest3Rankscore>=0.85546,1,0)
+brca1$fathmm_del <- ifelse(brca1$FathmmConvertedRankscore>=0.88158,1,0)
+brca1$pp2hvarrank_del <- ifelse(brca1$Polyphen2HvarRankscore>=0.91584,1,0)
+brca1$mutationtaster_del <- ifelse(brca1$MutationtasterConvertedRankscore>=0.81033,1,0)
+brca1$sift_del <- ifelse(brca1$SiftConvertedRankscore>=0.91219,1,0)
+brca1$agvgd_del <- ifelse(brca1$a_gvgd_prior>=0.29,1,0)
+brca1$lrt_del <- ifelse(brca1$LrtScore<=0.000926,1,0)
+brca1$provean_del <- ifelse(brca1$ProveanConvertedRankscore>=0.69906,1,0)
+brca1$pp2hdiv_del <- ifelse(brca1$Polyphen2HdivRankscore>=0.89865,1,0)
+brca1$gerprs_del <- ifelse(brca1$GerpRsRankscore>=0.67646,1,0)
+brca1$cadd_del <- ifelse(brca1$CaddRawRankscore>=0.66888,1,0)
+brca1$siphy_del <- ifelse(brca1$Siphy29wayLogoddsRankscore>=0.49967,1,0)
+brca1$phylopmammal_del <- ifelse(brca1$Phylop20wayMammalianRankscore>=0.48891,1,0)   
+brca1$phylopvertebrate_del <- ifelse(brca1$Phylop7wayVertebrateRankscore>=0.60462,1,0)
+brca1$phastconsvertebrate_del <- ifelse(brca1$Phastcons7wayVertebrateRankscore>=0.54028,1,0)
+brca1$phastconsmammal_del <- ifelse(brca1$Phastcons20wayMammalianRankscore>=0.51549,1,0)
+brca1$dann_del <- ifelse(brca1$DannRankscore>=0.69278,1,0)
+brca1$gerpnr_del <- ifelse(brca1$GerpNr>=5.22,1,0)
+brca1$carol_del <- ifelse(brca1$CAROL_score>=1,1,0)
+brca1$condel_del <- ifelse(brca1$Condel_score>=0.689,1,0)    
+
+brca1$sum_del_1 = with(brca1, vest3rank_del)
+brca1$sum_del_2 = with(brca1, vest3rank_del+perch_del)
+brca1$sum_del_3 = with(brca1, vest3rank_del+perch_del+agvgd_del)
+brca1$sum_del_4 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del)
+brca1$sum_del_5 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del)
+brca1$sum_del_6 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del)
+brca1$sum_del_7 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del)
+brca1$sum_del_8 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del+gerprs_del)
+brca1$sum_del_9 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del+gerprs_del+lrt_del)
+brca1$sum_del_10 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del)
+brca1$sum_del_11 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del)
+brca1$sum_del_12 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del)
+brca1$sum_del_13 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                  sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del)
+brca1$sum_del_14 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del)
+brca1$sum_del_15 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del)
+brca1$sum_del_16 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del)
+brca1$sum_del_17 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+
+                   cadd_del)
+brca1$sum_del_18 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del)
+brca1$sum_del_19 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del+dann_del)
+brca1$sum_del_20 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del+dann_del+condel_del)
+brca1$sum_del_21 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del+dann_del+condel_del+phylopvertebrate_del)
+brca1$sum_del_22 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del+dann_del+condel_del+phylopvertebrate_del+gerpnr_del)
+brca1$sum_del_23 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del+dann_del+condel_del+phylopvertebrate_del+gerpnr_del+
+                   phylopmammal_del)
+brca1$sum_del_24 = with(brca1, vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                   sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                   metalrrank_del+phastconsvertebrate_del+mutationtaster_del+carol_del+siphy_del+cadd_del+
+                   phastconsmammal_del+dann_del+condel_del+phylopvertebrate_del+gerpnr_del+
+                   phylopmammal_del+fathmm_del)
+
+brca1$perch_nn <- ifelse(brca1$PERCH_noMAF>=0.140337,1,0)
+brca1$metasvmrank_nn <- ifelse(brca1$MetasvmRankscore>=0.8874,1,0)
+brca1$metalrrank_nn <- ifelse(brca1$MetalrRankscore>=0.89743,1,0)
+brca1$mutationassessor_nn <- ifelse(brca1$MutationassessorRankscore>=0.44691,1,0)
+brca1$vest3rank_nn <- ifelse(brca1$Vest3Rankscore>=0.80056,1,0)
+brca1$fathmm_nn <- ifelse(brca1$FathmmConvertedRankscore>=0.88313,1,0) 
+brca1$pp2hvarrank_nn <- ifelse(brca1$Polyphen2HvarRankscore>=0.85043,1,0)
+brca1$mutationtaster_nn <- ifelse(brca1$MutationtasterConvertedRankscore>=0.81033,1,0)
+brca1$sift_nn <- ifelse(brca1$SiftConvertedRankscore>=0.91219,1,0)
+brca1$agvgd_nn <- ifelse(brca1$a_gvgd_prior>=0.29,1,0)
+brca1$lrt_nn <- ifelse(brca1$LrtConvertedRankscore>=0.38483,1,0)
+brca1$provean_nn <- ifelse(brca1$ProveanConvertedRankscore>=0.65469,1,0)
+brca1$pp2hdiv_nn <- ifelse(brca1$Polyphen2HdivRankscore>=0.89865,1,0)
+brca1$gerprs_nn <- ifelse(brca1$GerpRsRankscore>=0.61659,1,0)
+brca1$cadd_nn <- ifelse(brca1$CaddRawRankscore>=0.64548,1,0)
+brca1$siphy_nn <- ifelse(brca1$Siphy29wayLogoddsRankscore>=0.48478,1,0)
+brca1$phylopmammal_nn <- ifelse(brca1$Phylop20wayMammalianRankscore>=0.48811,1,0)
+brca1$phylopvertebrate_nn <- ifelse(brca1$Phylop7wayVertebrateRankscore>=0.60462,1,0) 
+brca1$phastconsvertebrate_nn <- ifelse(brca1$Phastcons7wayVertebrateRankscore>=0.46971,1,0)
+brca1$phastconsmammal_nn <- ifelse(brca1$Phastcons20wayMammalianRankscore>=0.47504,1,0)
+brca1$dann_nn <- ifelse(brca1$DannRankscore>=0.67191,1,0)  
+brca1$gerpnr_nn <- ifelse(brca1$GerpNr>=5.21,1,0)
+brca1$carol_nn <- ifelse(brca1$CAROL_score>=1,1,0)
+brca1$condel_nn <- ifelse(brca1$Condel_score>=0.674,1,0)
+  
+brca1$sum_nn_1 = with(brca1, vest3rank_nn)
+brca1$sum_nn_2 = with(brca1, vest3rank_nn+agvgd_nn)
+brca1$sum_nn_3 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn)
+brca1$sum_nn_4 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn)
+brca1$sum_nn_5 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn)
+brca1$sum_nn_6 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn)
+brca1$sum_nn_7 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn)
+brca1$sum_nn_8 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn)
+brca1$sum_nn_9 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn)
+brca1$sum_nn_10 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                  pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn)
+brca1$sum_nn_11 = with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                  pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn)
+brca1$sum_nn_12= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn)
+brca1$sum_nn_13= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn)
+brca1$sum_nn_14= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn)
+brca1$sum_nn_15= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn)
+brca1$sum_nn_16= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn)
+brca1$sum_nn_17= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn)
+brca1$sum_nn_18= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn)
+brca1$sum_nn_19= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn+dann_nn)
+brca1$sum_nn_20= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn+dann_nn+condel_nn)
+brca1$sum_nn_21= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn+dann_nn+condel_nn+phylopvertebrate_nn)
+brca1$sum_nn_22= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn+dann_nn+condel_nn+phylopvertebrate_nn+
+                 phylopmammal_nn)
+brca1$sum_nn_23= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn+dann_nn+condel_nn+phylopvertebrate_nn+
+                 phylopmammal_nn+gerpnr_nn)
+brca1$sum_nn_24= with(brca1, vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                 pp2hvarrank_nn+gerprs_nn+lrt_nn+mutationtaster_nn+provean_nn+
+                 cadd_nn+phastconsmammal_nn+metalrrank_nn+siphy_nn+mutationassessor_nn+
+                 phastconsvertebrate_nn+carol_nn+dann_nn+condel_nn+phylopvertebrate_nn+
+                 phylopmammal_nn+gerpnr_nn+fathmm_nn)
+```
+
+Calculate MCC at optimal cutpoint for each possible number of votes in NVM
+```{r vote_model, results='asis'}
+
+brca2.votes.train <- subset(brca2,set_=='train')
+brca1.votes.train <- subset(brca1,set_=='train')
+brca2.votes.test <- subset(brca2,set_=='test')
+brca1.votes.test <- subset(brca1,set_=='test')
+
+# BRCA2 - Deleterious vs Intermediate/Neutral (Scenario 1)
+fn <- matrix(nrow=22,ncol=1)
+fp <- matrix(nrow=22,ncol=1)
+nh <- matrix(nrow=22,ncol=1)
+nd <- matrix(nrow=22,ncol=1)
+tp <- matrix(nrow=22,ncol=1)
+tn <- matrix(nrow=22,ncol=1)
+mcc <- matrix(nrow=22,ncol=1)
+cutoff <- matrix(nrow=22,ncol=1)
+
+x <- brca2.votes.train[,c("sum_del_1","sum_del_2","sum_del_3","sum_del_4","sum_del_5",
+                        "sum_del_6","sum_del_7","sum_del_8","sum_del_9","sum_del_10",
+                        "sum_del_11","sum_del_12","sum_del_13","sum_del_14","sum_del_15",
+                        "sum_del_16","sum_del_17","sum_del_18","sum_del_19","sum_del_20",
+                        "sum_del_21","sum_del_22","hdr_del")]
+
+for (i in 1:22)
+{
+
+x$use <- x[,i]
+v2a.sum.i <- optimal.cutpoints(X="use",status="hdr_del",
+                          tag.healthy=0,methods=c("SpEqualSe"),valueSe=0.90,
+					                control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                ci.fit=TRUE,data=x)
+
+fn[i,1] <- v2a.sum.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v2a.sum.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v2a.sum.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2a.sum.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v2a.sum.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                                 (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+votes <- as.matrix(rep(1:22),nrow=22,ncol=1)
+nvm.mcc.2a <- data.frame(votes,cutoff,mcc)
+
+}
+
+#BRCA1 - Deleterious vs Intermediate/Neutral (Scenario 1)
+
+fn <- matrix(nrow=24,ncol=1)
+fp <- matrix(nrow=24,ncol=1)
+nh <- matrix(nrow=24,ncol=1)
+nd <- matrix(nrow=24,ncol=1)
+tp <- matrix(nrow=24,ncol=1)
+tn <- matrix(nrow=24,ncol=1)
+mcc <- matrix(nrow=24,ncol=1)
+cutoff <- matrix(nrow=24,ncol=1)
+
+x <- brca1.votes.train[,c("sum_del_1","sum_del_2","sum_del_3","sum_del_4","sum_del_5",
+                        "sum_del_6","sum_del_7","sum_del_8","sum_del_9","sum_del_10",
+                        "sum_del_11","sum_del_12","sum_del_13","sum_del_14","sum_del_15",
+                        "sum_del_16","sum_del_17","sum_del_18","sum_del_19","sum_del_20",
+                        "sum_del_21","sum_del_22","sum_del_23","sum_del_24","hdr_del")]
+
+for (i in 1:24){
+
+x$use <- x[,i]
+v1a.sum.i <- optimal.cutpoints(X="use",status="hdr_del",
+                           tag.healthy=0,methods=c("SpEqualSe"),valueSe=0.90,
+					                 control = control.cutpoints(ci.SeSp = "AgrestiCoull"), 
+					                 ci.fit=TRUE,data=x)
+
+fn[i,1] <- v1a.sum.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1a.sum.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1a.sum.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1a.sum.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1a.sum.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                                 (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+votes <- as.matrix(rep(1:24),nrow=24,ncol=1)
+nvm.mcc.1a <- data.frame(votes,cutoff,mcc)
+
+}
+
+#BRCA2 - Deleterious/Intermediate vs Neutral (Scenario 2)
+
+fn <- matrix(nrow=22,ncol=1)
+fp <- matrix(nrow=22,ncol=1)
+nh <- matrix(nrow=22,ncol=1)
+nd <- matrix(nrow=22,ncol=1)
+tp <- matrix(nrow=22,ncol=1)
+tn <- matrix(nrow=22,ncol=1)
+mcc <- matrix(nrow=22,ncol=1)
+cutoff <- matrix(nrow=22,ncol=1)
+
+x <- brca2.votes.train[,c("sum_nn_1","sum_nn_2","sum_nn_3","sum_nn_4","sum_nn_5",
+                        "sum_nn_6","sum_nn_7","sum_nn_8","sum_nn_9","sum_nn_10",
+                        "sum_nn_11","sum_nn_12","sum_nn_13","sum_nn_14","sum_nn_15",
+                        "sum_nn_16","sum_nn_17","sum_nn_18","sum_nn_19","sum_nn_20",
+                        "sum_nn_21","sum_nn_22","hdr_not_neutral")]
+
+for (i in 1:22){
+
+x$use <- x[,i]
+v2b.sum.i <- optimal.cutpoints(X="use",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),valueSe=0.90,
+					control = control.cutpoints(ci.SeSp = "AgrestiCoull"),                                     
+					ci.fit=TRUE,data=x)
+
+fn[i,1] <- v2b.sum.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v2b.sum.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v2b.sum.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v2b.sum.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v2b.sum.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                                                 (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+votes <- as.matrix(rep(1:22),nrow=22,ncol=1)
+nvm.mcc.2b <- data.frame(votes,cutoff,mcc)
+
+}
+
+
+#BRCA1 - Deleterious/Intermediate vs Neutral (Scenario 2)
+
+fn <- matrix(nrow=24,ncol=1)
+fp <- matrix(nrow=24,ncol=1)
+nh <- matrix(nrow=24,ncol=1)
+nd <- matrix(nrow=24,ncol=1)
+tp <- matrix(nrow=24,ncol=1)
+tn <- matrix(nrow=24,ncol=1)
+mcc <- matrix(nrow=24,ncol=1)
+cutoff <- matrix(nrow=24,ncol=1)
+
+x <- brca1.votes.train[,c("sum_nn_1","sum_nn_2","sum_nn_3","sum_nn_4","sum_nn_5",
+                        "sum_nn_6","sum_nn_7","sum_nn_8","sum_nn_9","sum_nn_10",
+                        "sum_nn_11","sum_nn_12","sum_nn_13","sum_nn_14","sum_nn_15",
+                        "sum_nn_16","sum_nn_17","sum_nn_18","sum_nn_19","sum_nn_20",
+                        "sum_nn_21","sum_nn_22","sum_nn_23","sum_nn_24","hdr_not_neutral")]
+
+
+for (i in 1:24){
+
+x$use <- x[,i]
+v1b.sum.i <- optimal.cutpoints(X="use",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),valueSe=0.90,
+					control = control.cutpoints(ci.SeSp = "AgrestiCoull"),    
+					ci.fit=TRUE,data=x)
+
+
+fn[i,1] <- v1b.sum.i$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- v1b.sum.i$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- v1b.sum.i$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- v1b.sum.i$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- v1b.sum.i$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+                          (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+votes <- as.matrix(rep(1:24),nrow=24,ncol=1)
+nvm.mcc.1b <- data.frame(votes,cutoff,mcc)
+
+}
+
+```
+
+#Figure S2
+### NVM - MCC vs number of models voting plots 
+BRCA2, Scenario 1
+```{r plot6a, width = 5, height = 5, pointsize = 10, results='asis'}
+FIG_S2_A<-NULL
+FIG_S2_A$Votes <- nvm.mcc.2a$votes
+FIG_S2_A$MCC   <- nvm.mcc.2a$mcc
+FIG_S2_A$Gene  <- "BRCA2"
+FIG_S2_A$Scenario <- 1
+```
+BRCA1, Scenario 1
+```{r plot6b, width = 5, height = 5, pointsize = 10, results='asis'}
+
+FIG_S2_B<-NULL
+FIG_S2_B$Votes <- nvm.mcc.1a$votes
+FIG_S2_B$MCC   <- nvm.mcc.1a$mcc
+FIG_S2_B$Gene  <- "BRCA1"
+FIG_S2_B$Scenario <- 1
+```
+BRCA2, Scenario 2
+```{r plot7a, width = 5, height = 5, pointsize = 10}
+FIG_S2_C<-NULL
+FIG_S2_C$Votes <- nvm.mcc.2b$votes
+FIG_S2_C$MCC   <- nvm.mcc.2b$mcc
+FIG_S2_C$Gene  <- "BRCA2"
+FIG_S2_C$Scenario <- 2
+```
+BRCA1, Scenario 2
+```{r fig_S2,fig.width = 10, fig.height = 5}
+FIG_S2_D<-NULL
+FIG_S2_D$Votes <- nvm.mcc.1b$votes
+FIG_S2_D$MCC   <- nvm.mcc.1b$mcc
+FIG_S2_D$Gene  <- "BRCA1"
+FIG_S2_D$Scenario <- 2
+
+
+FIG_S2 <- rbind(data.frame(FIG_S2_A),data.frame(FIG_S2_B),data.frame(FIG_S2_C),data.frame(FIG_S2_D))
+FIG_S2$Scenario<-as.factor(FIG_S2$Scenario)
+ggplot(FIG_S2,aes(x=Votes,y=MCC,colour=Scenario))+geom_point()+geom_line()+ facet_grid(. ~ Gene)+ylim(0,1)
+ggsave("figures/FIG_S2.png",width=9,height=7, units="in",dpi = 600)
+
+```
+ROC analysis new models
+Add model names for new models
+```{r model_names2}
+modelnames2<-c(
+"AlignGVGDPrior",
+"CADDPhred",
+"CADDRaw",
+"CADDRawRankScore",
+"CAROL",
+"CONDEL",
+"DannRankScore",
+"DannScore",
+"FathmmRankScore",
+"FathmmScore",
+"GerpNr",
+"GerpRs",
+"GerpRsRankScore",
+"LRTConvertedRankScore",
+"LRTScore",
+"MetaLRRankScore",
+"MetaLRScore",
+"MetaSVMRankScore",
+"MetaSVMScore",
+"MutationAssessorRankScore",
+"MutationAssessorScore",
+"MutationTasterRankScore",
+"MutationTasterScore",
+"PERCH",
+"PERCHnoMAF",
+"Phastcons20wayMammalianRank",
+"Phastcons7wayVertebrateRank",
+"Phylop20wayMammalianRank",
+"Phylop7wayVertebrateRank",
+"Polyphen2HdivRankScore",
+"Polyphen2HdivScore",
+"Polyphen2HvarRankScore",
+"Polyphen2HvarScore",
+"PROVEANConvertedRankScore",
+"PROVEANScore",
+"SiftConvertedRankScore",
+"SiftScore",
+"Siphy29wayLogOddsRank",
+"Vest3RankScore",
+"Vest3Score",
+"NewRFModel",
+"NewVoteModel-Training",
+"NewVoteModel-Validation",
+"NewVoteModel-Both")
+```
+
+Determine optimal cutpoints for RF
+BRCA2: Deleterious/Intermediate vs Neutral (Scenario1)
+```{r roc_new_models}
+
+#BRCA1 
+#Deleterious vs Intermediate/Neutral (Scenario 1)
+
+v2a.41 <- optimal.cutpoints(X="rf_prob_del",status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=vus.brca2..)
+
+
+v2a.42 <- optimal.cutpoints(X="sum_del_6",status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2.votes.train)
+
+v2a.43 <- optimal.cutpoints(X="sum_del_6",status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"), 
+					                  ci.fit=TRUE,data=brca2.votes.test)
+
+v2a.44 <- optimal.cutpoints(X="sum_del_6",status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"), 
+					                  ci.fit=TRUE,data=brca2)
+
+
+# Extract performance statistics for new models
+
+list.new <- list(v2a.41, v2a.42, v2a.43, v2a.44)
+names(list.new) <- c("v2a.41","v2a.42","v2a.43","v2a.44")
+
+fn <- matrix(NA,nrow=4,ncol=1)
+fp <- matrix(NA,nrow=4,ncol=1)
+nh <- matrix(NA,nrow=4,ncol=1)
+nd <- matrix(NA,nrow=4,ncol=1)
+tp <- matrix(NA,nrow=4,ncol=1)
+tn <- matrix(NA,nrow=4,ncol=1)
+mcc <- matrix(NA,nrow=4,ncol=1)
+cutoff <- matrix(NA,nrow=4,ncol=1)
+auc <- matrix(NA,nrow=4,ncol=3)
+sens <- matrix(NA,nrow=4,ncol=3)
+spec <- matrix(NA,nrow=4,ncol=3)
+
+for (i in 1:length(list.new)) {
+
+auc[i,] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2a.new.models <- data.frame(modelnames2[41:44],cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+colnames(brca2a.new.models) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+}
+
+#kable(brca2a.new.models, caption='Performance of New Models for BRCA2, Scenario 1')
+brca2a.new.models$Gene="BRCA2"
+brca2a.new.models$Scenario=1
+
+
+ST4 <-brca2a.new.models
+```
+BRCA2: Deleterious/Intermediate vs Neutral (Scenario2)
+```{r}					
+v2b.41 <- optimal.cutpoints(X="rf_prob_delint",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),                           
+					                  ci.fit=TRUE,data=vus.brca2..)
+
+v2b.42 <- optimal.cutpoints(X="sum_nn_7",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2.votes.train)
+
+v2b.43 <- optimal.cutpoints(X="sum_nn_7",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2.votes.test)
+
+v2b.44 <- optimal.cutpoints(X="sum_nn_7",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca2)
+
+
+# Extract performance statistics for new models
+
+list.new <- list(v2b.41, v2b.42, v2b.43, v2b.44)
+names(list.new) <- c("v2b.41","v2b.42","v2b.43","v2b.44")
+
+fn <- matrix(NA,nrow=4,ncol=1)
+fp <- matrix(NA,nrow=4,ncol=1)
+nh <- matrix(NA,nrow=4,ncol=1)
+nd <- matrix(NA,nrow=4,ncol=1)
+tp <- matrix(NA,nrow=4,ncol=1)
+tn <- matrix(NA,nrow=4,ncol=1)
+mcc <- matrix(NA,nrow=4,ncol=1)
+cutoff <- matrix(NA,nrow=4,ncol=1)
+auc <- matrix(NA,nrow=4,ncol=3)
+sens <- matrix(NA,nrow=4,ncol=3)
+spec <- matrix(NA,nrow=4,ncol=3)
+
+for (i in 1:length(list.new)) {
+
+auc[i,] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca2b.new.models <- data.frame(modelnames2[41:44],cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+colnames(brca2b.new.models) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+}
+
+#kable(brca2b.new.models, caption='Performance of New Models for BRCA2, Scenario 2')
+brca2b.new.models$Gene="BRCA2"
+brca2b.new.models$Scenario=2
+ST4<-rbind(brca2b.new.models,ST4)
+```
+BRCA1: Deleterious vs Intermediate/Neutral (Scenario 1)
+```{r}
+
+v1a.41 <- optimal.cutpoints(X="rf_prob_del",status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=vus.brca1..)
+
+v1a.42 <- optimal.cutpoints(X="sum_del_13",status="hdr_del",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+                            ci.fit=TRUE,data=brca1.votes.train)
+
+v1a.43 <- optimal.cutpoints(X="sum_del_13",status="hdr_del",
+                            tag.healthy=0,methods=c("MinValueSp"),
+					                  ci.fit=TRUE,data=brca1.votes.test)
+
+v1a.44 <- optimal.cutpoints(X="sum_del_13",status="hdr_del",
+                            tag.healthy=0,methods=c("MinValueSp"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull",valueSp=0.89),
+                            ci.fit=TRUE,data=brca1)
+
+# Extract performance statistics for new models
+
+list.new <- list(v1a.41, v1a.42, v1a.43, v1a.44)
+names(list.new) <- c("v1a.41","v1a.42","v1a.43","v1a.44")
+
+fn <- matrix(NA,nrow=4,ncol=1)
+fp <- matrix(NA,nrow=4,ncol=1)
+nh <- matrix(NA,nrow=4,ncol=1)
+nd <- matrix(NA,nrow=4,ncol=1)
+tp <- matrix(NA,nrow=4,ncol=1)
+tn <- matrix(NA,nrow=4,ncol=1)
+mcc <- matrix(NA,nrow=4,ncol=1)
+cutoff <- matrix(NA,nrow=4,ncol=1)
+auc <- matrix(NA,nrow=4,ncol=3)
+sens <- matrix(NA,nrow=4,ncol=3)
+spec <- matrix(NA,nrow=4,ncol=3)
+
+for (i in 1:1) {
+
+auc[i,] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Se[c(1,3,5)]
+spec[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1,3,5)]
+fn[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$cutoff[1]
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.new.models.1 <- data.frame(cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+
+}
+
+for (i in 2:2) {
+
+auc[i,] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.new.models.2 <- data.frame(cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+
+}
+
+for (i in 3:4) {
+
+auc[i,] <- list.new[[i]]$MinValueSp[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$MinValueSp[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$MinValueSp[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.new.models.3 <- data.frame(cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+}
+
+
+brca1a.new.models <- cbind(modelnames2[41:44],brca1a.new.models.3)
+colnames(brca1a.new.models) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+#kable(brca1a.new.models, caption='Performance of New Models for BRCA1, Scenario 1')
+brca1a.new.models$Gene="BRCA1"
+brca1a.new.models$Scenario=1
+ST4<-rbind(brca1a.new.models,ST4)
+
+```
+BRCA1 - Deleterious/Intermediate vs Neutral (Scenario 2)					   
+```{r}
+#BRCA1 - Deleterious/Intermediate vs Neutral (Scenario 2)					   
+v1b.41 <- optimal.cutpoints(X="rf_prob_delint",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=vus.brca1..)
+
+v1b.42 <- optimal.cutpoints(X="sum_nn_9",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("SpEqualSe"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull"),
+					                  ci.fit=TRUE,data=brca1.votes.train)
+
+v1b.43 <- optimal.cutpoints(X="sum_nn_9",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("MinValueSp"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull",valueSp=0.9),
+					                  ci.fit=TRUE,data=brca1.votes.test)
+
+v1b.44 <- optimal.cutpoints(X="sum_nn_9",status="hdr_not_neutral",
+                            tag.healthy=0,methods=c("MinValueSp"),
+					                  control = control.cutpoints(ci.SeSp = "AgrestiCoull",valueSp=0.85),
+					                  ci.fit=TRUE,data=brca1)
+
+list.new <- list(v1b.41, v1b.42, v1b.43, v1b.44)
+names(list.new) <- c("v1b.41","v1b.42","v1b.43","v1b.44")
+
+fn <- matrix(NA,nrow=4,ncol=1)
+fp <- matrix(NA,nrow=4,ncol=1)
+nh <- matrix(NA,nrow=4,ncol=1)
+nd <- matrix(NA,nrow=4,ncol=1)
+tp <- matrix(NA,nrow=4,ncol=1)
+tn <- matrix(NA,nrow=4,ncol=1)
+mcc <- matrix(NA,nrow=4,ncol=1)
+cutoff <- matrix(NA,nrow=4,ncol=1)
+auc <- matrix(NA,nrow=4,ncol=3)
+sens <- matrix(NA,nrow=4,ncol=3)
+spec <- matrix(NA,nrow=4,ncol=3)
+
+for (i in 1:2) {
+
+auc[i,] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$SpEqualSe[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$SpEqualSe[[1]]$optimal.cutoff$cutoff[1]
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1a.new.models.1 <- data.frame(cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+}
+
+
+for (i in 3:4) {
+
+auc[i,] <- list.new[[i]]$MinValueSp[[1]]$measures.acc$AUC
+sens[i,] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$Se[c(1:3)]
+spec[i,] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$Sp[c(1:3)]
+fn[i,1] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$FN[1]
+fp[i,1] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$FP[1]
+nh[i,1] <- list.new[[i]]$MinValueSp[[1]]$measures.acc$n$h
+nd[i,1] <- list.new[[i]]$MinValueSp[[1]]$measures.acc$n$d
+tp[i,1] <- nd[i,] - fn[i,]
+tn[i,1] <- nh[i,] - fp[i,]
+
+cutoff[i,1] <- list.new[[i]]$MinValueSp[[1]]$optimal.cutoff$cutoff
+
+mcc[i,1] <- (tp[i,]*tn[i,]-fp[i,]*fn[i,])/sqrt((tp[i,]+fp[i,])*
+            (tp[i,]+fn[i,])*(tn[i,]+fp[i,])*(tn[i,]+fn[i,]))
+
+brca1b.new.models.2 <- data.frame(cutoff,sens,spec,auc,fn,fp,tp,tn,mcc,
+                                stringsAsFactors = FALSE)
+}
+
+
+brca1b.new.models <- cbind(modelnames2[41:44],brca1b.new.models.2)
+colnames(brca1b.new.models) <- c("model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+
+#kable(brca1b.new.models, caption='Performance of New Models for BRCA1, Scenario 2')
+brca1b.new.models$Gene="BRCA1"
+brca1b.new.models$Scenario=2
+ST4<-rbind(brca1b.new.models,ST4)
+```
+
+Appending new methods to Table S4 and sorting by MCC
+```{r tableS4_full}
+ST4 <- rbind(ST4_BRCA1_S1,ST4_BRCA1_S2,ST4_BRCA2_S1,ST4_BRCA2_S2,ST4)
+ST4 <- ST4[order(ST4$mcc,decreasing = T),]
+```
+
+# Table 2
+### Performance of in silico prediction models with optimized thresholds for classification of BRCA1 and BRCA2 missense variants (Subset of table S4)
+```{r}
+brca1_idx = which(ST4$model != "NewVoteModel-Training" & 
+                    ST4$model != "NewVoteModel-Both" & 
+                    ST4$Gene=="BRCA1" & 
+                    ST4$Scenario ==1)[1:12]
+brca2_idx = which(ST4$model != "NewVoteModel-Training" & 
+                    ST4$model != "NewVoteModel-Both" & 
+                    ST4$Gene=="BRCA2" & 
+                    ST4$Scenario ==1)[1:12]
+tmp_table <-ST4[c(brca1_idx,brca2_idx),]
+tmp_table = tmp_table[which(tmp_table$Scenario==1),]
+tmp_table$AUC <-paste(round(tmp_table$auc,2)," (",round(tmp_table$auc.lcl,3),"-",round(tmp_table$auc.ucl,3),")",sep="")
+tmp_table$FN_FP_TP_TN<-paste(tmp_table$FN,tmp_table$FP,tmp_table$TP,tmp_table$TN,sep=" / ")
+tmp_table$ORDER=1
+tmp_table$cutpoint<-round(tmp_table$cutpoint,2)
+tmp_table$ORDER[which(tmp_table$Gene=="BRCA2")]=0
+TABLE_2 = unique(tmp_table[order(tmp_table$ORDER, tmp_table$mcc,decreasing=T),c("Gene","model","cutpoint","AUC","FN_FP_TP_TN","mcc")])
+knitr::kable(TABLE_2,row.names = F)
+write.table(TABLE_2,file="tables/Table_2.tsv",row.names = F,col.names = T,sep="\t")
+```
+
+# Figure S3
+### Receiver operating characteristic (ROC) curves for the NVM model applied to the entire data set using rules for BRCA1 and BRCA2 genes. 
+Assemble stats for NVM
+```{r}
+
+# Numbers for NVM ROC figure
+roc2a.nvm <- prediction(brca2$sum_del_6,brca2$hdr_del)
+perf2a.nvm <- performance(roc2a.nvm,"tpr","fpr")
+x_val <- unlist(perf2a.nvm@x.values)
+y_val <- unlist(perf2a.nvm@y.values)
+gene  <- rep("BRCA2",length(x_val))
+Scenario  <- rep("Scenario 1",length(x_val))
+tmp<- data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario)
+
+roc2b.nvm <- prediction(brca2$sum_nn_7,brca2$hdr_not_neutral)
+perf2b.nvm <- performance(roc2b.nvm,"tpr","fpr")
+x_val <- unlist(perf2b.nvm@x.values)
+y_val <- unlist(perf2b.nvm@y.values)
+gene  <- rep("BRCA2",length(x_val))
+Scenario  <- rep("Scenario 2",length(x_val))
+tmp<- rbind(tmp,data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario))
+
+roc1a.nvm <- prediction(brca1$sum_del_13,brca1$hdr_del)
+perf1a.nvm <- performance(roc1a.nvm,"tpr","fpr")
+x_val <- unlist(perf1a.nvm@x.values)
+y_val <- unlist(perf1a.nvm@y.values)
+gene  <- rep("BRCA1",length(x_val))
+Scenario  <- rep("Scenario 1",length(x_val))
+tmp<- rbind(tmp,data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario))
+
+roc1b.nvm <- prediction(brca1$sum_nn_9,brca1$hdr_not_neutral)
+perf1b.nvm <- performance(roc1b.nvm,"tpr","fpr")
+x_val <- unlist(perf1b.nvm@x.values)
+y_val <- unlist(perf1b.nvm@y.values)
+gene  <- rep("BRCA1",length(x_val))
+Scenario  <- rep("Scenario 2",length(x_val))
+tmp<- rbind(tmp,data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario))
+tmp$Model <-"NVM"
+```
+Assemble stats for RF
+```{r plot9, width = 4, height = 4, pointsize = 10}
+
+# Numbers for RF ROC figure
+roc2a.rf <- prediction(vus.brca2..$rf_prob_del,vus.brca2..$hdr_del)
+perf2a.rf<- performance(roc2a.rf,"tpr","fpr")
+x_val <- unlist(perf2a.rf@x.values)
+y_val <- unlist(perf2a.rf@y.values)
+gene  <- rep("BRCA2",length(x_val))
+Scenario  <- rep("Scenario 1",length(x_val))
+tmp2<- data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario)
+
+roc2b.rf <- prediction(vus.brca2..$rf_prob_delint,vus.brca2..$hdr_not_neutral)
+perf2b.rf <- performance(roc2b.rf,"tpr","fpr")
+x_val <- unlist(perf2b.rf@x.values)
+y_val <- unlist(perf2b.rf@y.values)
+gene  <- rep("BRCA2",length(x_val))
+Scenario  <- rep("Scenario 2",length(x_val))
+tmp2<- rbind(tmp2,data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario))
+
+roc1a.rf <- prediction(vus.brca1..$rf_prob_del,vus.brca1..$hdr_del)
+perf1a.rf <- performance(roc1a.rf,"tpr","fpr")
+x_val <- unlist(perf1a.rf@x.values)
+y_val <- unlist(perf1a.rf@y.values)
+gene  <- rep("BRCA1",length(x_val))
+Scenario  <- rep("Scenario 1",length(x_val))
+tmp2<- rbind(tmp2,data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario))
+
+
+roc1b.rf <- prediction(vus.brca1..$rf_prob_delint,vus.brca1..$hdr_not_neutral)
+perf1b.rf <- performance(roc1b.rf,"tpr","fpr")
+x_val <- unlist(perf1b.rf@x.values)
+y_val <- unlist(perf1b.rf@y.values)
+gene  <- rep("BRCA1",length(x_val))
+Scenario  <- rep("Scenario 2",length(x_val))
+tmp2<- rbind(tmp2,data.frame(FPR=x_val,TPR=y_val,Gene=gene,Scenario))
+tmp2$Model <- "RF"
+
+tmp_SF3 <- rbind(tmp,tmp2)
+ggplot(tmp_SF3,aes(x=FPR,y=TPR,colour=Gene))+geom_point()+geom_line()+facet_grid(Model ~ Scenario)+theme_bw()
+ggsave("figures/FIG_S3.png",height = 9,width = 5,units="in",dpi = 600)
+```
+
+# Table S4
+### Sensitivity, Specificity, AUC, and MCC for each gene and each Scenario.
+
+```{r final_output}
+brca2a.models.$Gene="BRCA2"
+brca2a.models.$Scenario="1"
+brca2a.output <- rbind(brca2a.models., brca2a.new.models)
+
+brca2a.output. <- cbind(rep(2,44),rep(1,44),brca2a.output)
+colnames(brca2a.output.) <- c("Gene","Scenario","model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+brca2a.output.$Gene="BRCA2"
+
+brca2b.models.$Gene="BRCA2"
+brca2b.models.$Scenario="2"
+brca2b.output <- rbind(brca2b.models., brca2b.new.models)
+brca2b.output. <- cbind(rep(2,44),rep(2,44),brca2b.output)
+colnames(brca2b.output.) <- c("Gene","Scenario","model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+brca2b.output.$Gene="BRCA2"
+
+brca1a.models.$Gene="BRCA1"
+brca1a.models.$Scenario="1"
+brca1a.output <- rbind(brca1a.models., brca1a.new.models)
+brca1a.output. <- cbind(rep(1,44),rep(1,44),brca1a.output)
+colnames(brca1a.output.) <- c("Gene","Scenario","model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+brca1a.output.$Gene="BRCA1"
+
+brca1b.models.$Gene="BRCA1"
+brca1b.models.$Scenario="2"
+brca1b.output <- rbind(brca1b.models., brca1b.new.models)
+brca1b.output. <- cbind(rep(1,44),rep(2,44),brca1b.output)
+colnames(brca1b.output.) <- c("Gene","Scenario","model","cutpoint","sens","sens.lcl","sens.ucl","spec",
+                             "spec.lcl","spec.ucl","auc","auc.lcl","auc.ucl","FN","FP",
+                             "TP","TN","mcc")
+brca1b.output.$Gene="BRCA1"
+
+ST4 <- rbind(brca2a.new.models,brca2b.new.models,brca1a.new.models,brca1b.new.models,ST4)
+```
+
+```{r}
+knitr::kable(ST4)
+#write.csv(tableS4,file='TableS4.csv')
+```
+
+Output dataset with predictions for variants with functional data
+
+```{r functional_variants}
+
+# Merge random forest prediction into dataset with vote model prediciton
+
+brca2.rf.prob <- vus.brca2..[,c("CAVA_CSN","rf_prob_del","rf_prob_delint")]
+brca2. <- merge(brca2,brca2.rf.prob, by="CAVA_CSN", all=TRUE)
+
+brca1.rf.prob <- vus.brca1..[,c("CAVA_CSN","rf_prob_del","rf_prob_delint")]
+brca1. <- merge(brca1,brca1.rf.prob, by="CAVA_CSN", all=TRUE)
+
+#BRCA2, dichotomomize random forest probability
+brca2.$rf_pred_del <- ifelse(brca2.$rf_prob_del>=0.371,1,0)
+brca2.$rf_pred_delint <- ifelse(brca2.$rf_prob_delint>=0.437,1,0)
+
+#BRCA2, dichotomize vote model sum 
+brca2.$nvm_pred_del <- ifelse(brca2.$sum_del_6>=4,1,0)
+brca2.$nvm_pred_delint <- ifelse(brca2.$sum_nn_7>=5,1,0)
+
+
+#BRCA1, dichotomomize random forest probability
+brca1.$rf_pred_del <- ifelse(brca1.$rf_prob_del>=0.298,1,0)
+brca1.$rf_pred_delint <- ifelse(brca1.$rf_prob_delint>=0.378,1,0)
+
+#BRCA1, dichotomize vote model sum 
+brca1.$nvm_pred_del <- ifelse(brca1.$sum_del_13>=9,1,0)
+brca1.$nvm_pred_delint <- ifelse(brca1.$sum_nn_9>=6,1,0)
+
+#write.csv(brca2.,file="brca2_with_function.csv")
+#write.csv(brca1.,file="brca1_with_function.csv")
+
+```
+
+# Table S2
+### All variants, including those with functional data used in this study 
+
+```{r predict_all, warning=FALSE, message=FALSE}
+
+#BRCA2, Add NVM
+
+all2..$perch_del <- ifelse(all2..$PERCH>=0.295957,1,0) 
+all2..$metasvmrank_del <- ifelse(all2..$MetasvmRankscore>=0.93181,1,0)
+all2..$metalrrank_del <- ifelse(all2..$MetalrRankscore>=0.92107,1,0)
+all2..$mutationassessor_del <- ifelse(all2..$MutationassessorRankscore>=0.84368,1,0)
+all2..$vest3rank_del <- ifelse(all2..$Vest3Rankscore>=0.79963,1,0)
+all2..$pp2hvarrank_del <- ifelse(all2..$Polyphen2HvarRankscore>=0.97092,1,0)
+
+all2..$perch_nn <- ifelse(all2..$PERCH>=0.232796,1,0)
+all2..$metasvmrank_nn <- ifelse(all2..$MetasvmRankscore>=0.92233,1,0)
+all2..$metalrrank_nn <- ifelse(all2..$MetalrRankscore>=0.91514,1,0)  
+all2..$pp2hdiv_nn <- ifelse(all2..$Polyphen2HdivRankscore>=0.89865,1,0)
+all2..$vest3rank_nn <- ifelse(all2..$Vest3Rankscore>=0.7831,1,0)
+all2..$pp2hvarrank_nn <- ifelse(all2..$Polyphen2HvarRankscore>=0.97092,1,0)
+all2..$sift_nn <- ifelse(all2..$SiftConvertedRankscore>=0.91219,1,0)         
+
+all2..$sum_del_6 = with(all2.., perch_del+metasvmrank_del+metalrrank_del+vest3rank_del+pp2hvarrank_del+
+                   mutationassessor_del)
+
+all2..$sum_nn_7 = with(all2.., perch_nn+vest3rank_nn+metasvmrank_nn+metalrrank_nn+pp2hvarrank_nn+
+                  pp2hdiv_nn+sift_nn)
+
+
+all2..$nvm_pred_del <- ifelse(all2..$sum_del_6>=4,1,0)
+all2..$nvm_pred_delint <- ifelse(all2..$sum_nn_7>=5,1,0)
+
+#BRCA2, dichotomomize random forest probability
+
+all2..$rf_pred_del <- ifelse(all2..$rf_prob_del>=0.371,1,0)
+all2..$rf_pred_delint <- ifelse(all2..$rf_prob_delint>=0.437,1,0)
+
+#write.csv(all2..,file='all_vus_brca2.csv')
+
+all1..$perch_del <- ifelse(all1..$PERCH_noMAF>=0.206316,1,0)
+all1..$metasvmrank_del <- ifelse(all1..$MetasvmRankscore>=0.9083,1,0)
+all1..$metalrrank_del <- ifelse(all1..$MetalrRankscore>=0.90291,1,0)
+all1..$mutationassessor_del <- ifelse(all1..$MutationassessorRankscore>=0.54432,1,0)
+all1..$vest3rank_del <- ifelse(all1..$Vest3Rankscore>=0.85546,1,0)
+all1..$pp2hvarrank_del <- ifelse(all1..$Polyphen2HvarRankscore>=0.91584,1,0)
+all1..$sift_del <- ifelse(all1..$SiftConvertedRankscore>=0.91219,1,0)
+all1..$agvgd_del <- ifelse(all1..$a_gvgd_prior>=0.29,1,0)
+all1..$lrt_del <- ifelse(all1..$LrtScore<=0.000926,1,0)
+all1..$provean_del <- ifelse(all1..$ProveanConvertedRankscore>=0.69906,1,0)
+all1..$pp2hdiv_del <- ifelse(all1..$Polyphen2HdivRankscore>=0.89865,1,0)
+all1..$gerprs_del <- ifelse(all1..$GerpRsRankscore>=0.67646,1,0)
+all1..$phastconsvertebrate_del <- ifelse(all1..$Phastcons7wayVertebrateRankscore>=0.54028,1,0)
+
+all1..$vest3rank_nn <- ifelse(all1..$Vest3Rankscore>=0.80056,1,0)
+all1..$agvgd_nn <- ifelse(all1..$a_gvgd_prior>=0.29,1,0)
+all1..$perch_nn <- ifelse(all1..$PERCH_noMAF>=0.140337,1,0)
+all1..$sift_nn <- ifelse(all1..$SiftConvertedRankscore>=0.91219,1,0)
+all1..$metasvmrank_nn <- ifelse(all1..$MetasvmRankscore>=0.8874,1,0)
+all1..$pp2hdiv_nn <- ifelse(all1..$Polyphen2HdivRankscore>=0.89865,1,0)
+all1..$pp2hvarrank_nn <- ifelse(all1..$Polyphen2HvarRankscore>=0.85043,1,0)
+all1..$gerprs_nn <- ifelse(all1..$GerpRsRankscore>=0.61659,1,0)
+all1..$lrt_nn <- ifelse(all1..$LrtConvertedRankscore>=0.38483,1,0)
+
+
+all1..$sum_del_13 = with(all1.., vest3rank_del+perch_del+agvgd_del+pp2hvarrank_del+metasvmrank_del+
+                    sift_del+pp2hdiv_del+gerprs_del+lrt_del+provean_del+mutationassessor_del+
+                    metalrrank_del+phastconsvertebrate_del)
+
+all1..$sum_nn_9 = with(all1.., vest3rank_nn+agvgd_nn+perch_nn+sift_nn+metasvmrank_nn+pp2hdiv_nn+
+                  pp2hvarrank_nn+gerprs_nn+lrt_nn)
+
+all1..$nvm_pred_del <- ifelse(all1..$sum_del_13>=9,1,0)
+all1..$nvm_pred_delint <- ifelse(all1..$sum_nn_9>=6,1,0)
+
+#BRCA1, dichotomomize random forest probability
+
+all1..$rf_pred_del <- ifelse(all1.$rf_prob_del>=0.298,1,0)
+all1..$rf_pred_delint <- ifelse(all1..$rf_prob_delint>=0.378,1,0)
+
+write.table(all1..,file='tables/Table_S2.tsv',row.names = F,sep="\t")
+```
+
+#################################################################################################################
+
+#Figure 1
+### HDR activity of 207 BRCA2 missense variants
+```{r fig1, fig.width=16}
+functional_data <-read.csv("./sources/functional_activity_scores.tsv",header=T,sep="\t")
+
+lev<- (functional_data$Variant[order(functional_data$Fold,decreasing = T)])
+functional_data$Variant<- factor(functional_data$Variant,lev)
+functional_data<-functional_data[order(functional_data$Fold,decreasing = T),]
+
+#Manually add lines
+line1 <- which(functional_data$Fold<1.66)
+line1 = functional_data$Variant[line1[1]]
+line2 <- which(functional_data$Fold>2.41)
+line2 <- functional_data$Variant[tail(line2,n=1)]
+
+#Set status
+functional_data$Class<-"Deleterious"
+functional_data$Class[which(functional_data$Fold>1.66)]<-"Indeterminant"
+functional_data$Class[which(functional_data$Fold>2.41)]<-"Neutral"
+
+ggplot(functional_data,aes(x=Variant,y=Fold, ymin=MIN, ymax=MAX,order=Fold,colour=Class))+
+  geom_pointrange()+ 
+  theme(axis.text.x = element_blank(),panel.background = element_rect(fill="white"))+
+  ylab("Normalized fold change in GFP(+) cells")+ scale_colour_grey()
+
+ggsave("figures/FIGURE_1.png",width=9,height=7, units="in",dpi = 600)
+```
+
+#Figure 3
+### MCC values for optimized thresholds
+```{r fig_3, fig.width=12}
+ggplot(ST4,aes(x=model,y=mcc,fill=Gene))+ scale_colour_grey()+scale_fill_grey()+
+  geom_bar(stat="identity",position="dodge")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),panel.background = element_rect(fill="white"))
+
+ggsave("figures/FIGURE_3.png",width=9,height=7, units="in",dpi = 600)
+```
+
+# Figure 5
+### Estimates of the proportion of pathogenic missense mutations along each gene. 
+The x-axis is the amino acid position, and the y-axis is the probability of a missense mutation being damaging from the NVM model. The lines were smoothed using a 50 amino acid sliding window.
+```{r fig_5a, fig.width=12}
+BRCA1_All_missense <- all1..[which(all1..$CAVA_GENE=="BRCA1"),c("AAPOS","nvm_pred_del")]
+BRCA2_All_missense <- all2..[which(all2..$CAVA_GENE=="BRCA2"),c("AAPOS","nvm_pred_del")]
+
+# reorder BRCA1
+BRCA1_All_missense <- BRCA1_All_missense[order(BRCA1_All_missense$AAPOS,decreasing = F),]
+
+#Make curve
+RES<-NULL
+window=50
+
+tmp <- BRCA1_All_missense
+for (i in 1:length(tmp$AAPOS)){
+  pos<-tmp$AAPOS[i]
+  if(pos-window < 0){winMin = 0}else{winMin = pos-window}
+  winMax<-pos+window
+  events<-length(which(tmp$AAPOS>winMin & tmp$AAPOS<winMax))
+  pevents<-length(which(tmp$AAPOS>winMin & tmp$AAPOS<winMax & tmp$nvm_pred_del==1))
+  ratio<-pevents/events
+  NUM<-c(pos,ratio)
+  RES<-rbind(RES,NUM)
+}
+
+RES<-data.frame(RES)
+names(RES)<-c("AAPOS","ProbPathMissense")
+
+
+Domains = NULL
+Domains = data.frame(
+  name=c("RING","TP53 Interaction","PALB2 Interaction","BRCT","BRCT"),
+  min_x_pos=c(24,224,1397,1642,1756),
+  max_x_pos=c(65,500,1474,1736,1855),
+  min_y_pos=c(-0.01,-0.01,-0.01,-0.01,-0.01),
+  max_y_pos=c(0.01,0.01,0.01,0.01,0.01)
+  )
+  
+b1 <- ggplot(data=RES,aes(x=AAPOS,y=ProbPathMissense))+
+  geom_line()+
+  ggtitle("BRCA1")+
+  geom_rect(inherit.aes = FALSE,data=Domains,
+            aes(xmin=min_x_pos,xmax=max_x_pos,ymin=min_y_pos,ymax=max_y_pos,fill=name))+
+  theme_bw()+scale_fill_grey()
+
+```
+
+```{r  fig_5b, fig.width=12}
+
+#Make curve
+RES<-NULL
+window=50
+
+tmp <- BRCA2_All_missense
+for (i in 1:length(tmp$AAPOS)){
+  pos<-tmp$AAPOS[i]
+  if(pos-window < 0){winMin = 0}else{winMin = pos-window}
+  winMax<-pos+window
+  events<-length(which(tmp$AAPOS>winMin & tmp$AAPOS<winMax))
+  pevents<-length(which(tmp$AAPOS>winMin & tmp$AAPOS<winMax & tmp$nvm_pred_del==1))
+  ratio<-pevents/events
+  NUM<-c(pos,ratio)
+  RES<-rbind(RES,NUM)
+}
+
+RES<-data.frame(RES)
+names(RES)<-c("AAPOS","ProbPathMissense")
+
+
+Domains = NULL
+Domains = data.frame(
+  name=c("PALB2 Interaction","BRC Repeat","Helical","OB","OB","OB"),
+  min_x_pos=c(1, 1009,2481,2670,2804,3057 ),
+  max_x_pos=c(39,2083,2667,2793,3054,3186 ),
+  min_y_pos=c(-0.01,-0.01,-0.01,-0.01,-0.01,-0.01),
+  max_y_pos=c(0.01,0.01,0.01,0.01,0.01,0.01)
+  )
+  
+b2<-ggplot(data=RES,aes(x=AAPOS,y=ProbPathMissense))+
+  geom_line()+
+  ggtitle("BRCA2")+
+  geom_rect(inherit.aes = FALSE,data=Domains,
+            aes(xmin=min_x_pos,xmax=max_x_pos,ymin=min_y_pos,ymax=max_y_pos,fill=name))+
+  theme_bw()+scale_fill_grey()
+
+
+FIGURE_5 = grid.arrange(b1,b2)
+
+ggsave("figures/FIGURE_5.png",width=9,height=7, units="in",plot = FIGURE_5,dpi = 600)
+#grid.arrange(b1,b2)
+
+```
+
+
+# Table S5
+Summary of vote model rules for functional class predictions. 
+
+BRCA1 - Scenario 1 
+```{r}
+row="PERCH_noMAF>=0.206316"
+row=rbind(row,"MetasvmRankscore >= 0.9083")
+row=rbind(row,"MetalrRankscore >= 0.90291")
+row=rbind(row,"MutationassessorRankscore >= 0.54432")
+row=rbind(row,"Vest3Rankscore >= 0.85546")
+row=rbind(row,"FathmmConvertedRankscore >= 0.88158")
+row=rbind(row,"Polyphen2HvarRankscore >= 0.91584")
+row=rbind(row,"MutationtasterConvertedRankscore >= 0.81033")
+row=rbind(row,"SiftConvertedRankscore >= 0.91219")
+df = data.frame(row)
+names(df)<-"BRCA1 - Scenario 1"
+knitr::kable(df,row.names = FALSE)
+```
+```{r}
+row="PERCH_noMAF >= 0.140337"
+row=rbind(row,"MetasvmRankscore >= 0.8874")
+row=rbind(row,"MetalrRankscore >= 0.89743")
+row=rbind(row,"MutationassessorRankscore >= 0.44691")
+row=rbind(row,"Vest3Rankscore >= 0.80056")
+row=rbind(row,"FathmmConvertedRankscore >=0.88313")
+df = data.frame(row)
+names(df)<-"BRCA1 - Scenario 2"
+knitr::kable(df,row.names = FALSE)
+```
+
+
+```{r}
+row="PERCH>=0.295957"
+row=rbind(row,"MetasvmRankscore >= 0.93181")
+row=rbind(row,"MetalrRankscore >= 0.92107")
+row=rbind(row,"MutationassessorRankscore >= 0.84368")
+row=rbind(row,"Vest3Rankscore >= 0.79963")
+row=rbind(row,"Polyphen2HvarRankscore >= 0.97092")
+df = data.frame(row)
+names(df)<-"BRCA1 - Scenario 1"
+knitr::kable(df,row.names = FALSE)
+```
+
+```{r}
+row="PERCH >= 0.232796"
+row=rbind(row,"MetasvmRankscore >= 0.92233")
+row=rbind(row,"MetalrRankscore >= 0.91514")
+row=rbind(row,"MutationassessorRankscore >= 0.83541")
+row=rbind(row,"Vest3Rankscore >= 0.7831")
+df = data.frame(row)
+names(df)<-"BRCA2 - Scenario 2"
+knitr::kable(df,row.names = FALSE)
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
